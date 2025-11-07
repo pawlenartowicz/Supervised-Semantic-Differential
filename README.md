@@ -453,7 +453,7 @@ from ssdiff import (
 ## Citing & License
 
 - License: MIT (see LICENSE).
-- If you use SSD in published work, please cite the package (and the classic Semantic Differential literature that motivated the method). 
+- If you use SSD in published work, please cite the associated paper.
 - A suggested citation:
 
 Plisiecki, H., Lenartowicz, P., Pokropek, A., Małyska, K., & Flakus, M. (2025). Measuring Individual Differences in Meaning: The Supervised Semantic Differential. PsyArXiv. https://doi.org/10.31234/osf.io/gvrsb_v1
