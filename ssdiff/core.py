@@ -204,6 +204,9 @@ class SSD:
 
     # ---------- Internals ----------
     def _fit_beta(self) -> np.ndarray:
+        """
+        Fit OLS in PCA space, back-project to doc space, compute diagnostics.
+        """
         ys = self.ys
         w_reg = np.linalg.solve(self.z.T @ self.z, self.z.T @ ys)
         y_pred = self.z @ w_reg
@@ -616,7 +619,6 @@ class SSD:
             return pd.DataFrame({c: result[c] for c in cols})
         return result
 
-    # ---- ADD THESE METHODS INSIDE class SSD ----
 
     def select_extreme_docs(
             self,

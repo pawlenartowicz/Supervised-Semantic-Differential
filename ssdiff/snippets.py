@@ -9,10 +9,18 @@ from .preprocess import PreprocessedDoc, PreprocessedProfile
 
 # ---------- utils ----------
 def _unit(v: np.ndarray, eps: float = 1e-12) -> np.ndarray:
+    """
+    Return unit vector in direction of v, or zero vector if ||v|| < eps.
+    """
     n = float(np.linalg.norm(v))
     return v / max(n, eps)
 
 def _centroid_unit_from_cluster_words(words: list[tuple], kv) -> np.ndarray:
+    """
+    Compute unit centroid vector from cluster words.
+    Each word in words is a tuple (word_str, score, rank).
+    Returns unit vector or zero vector if no words in kv.
+    """
     vecs = []
     for w, *_ in words:
         if w in kv:
@@ -38,6 +46,10 @@ class _DocLike:
 def _iter_doclikes(
     pre_docs: List[Union[PreprocessedDoc, PreprocessedProfile]]
 ) -> Iterator[_DocLike]:
+    """
+    Iterate over all docs/posts as _DocLike objects.
+    Yields _DocLike objects for each doc/post.
+    """
     if not pre_docs:
         return
     if isinstance(pre_docs[0], PreprocessedDoc):
@@ -61,6 +73,9 @@ def _iter_doclikes(
                 )
 
 def _build_global_sif(pre_docs) -> Tuple[dict[str,int], int]:
+    """
+    Build global word counts and total token count from pre_docs.
+    """
     wc: dict[str,int] = {}
     tot = 0
     for D in _iter_doclikes(pre_docs):
@@ -70,6 +85,10 @@ def _build_global_sif(pre_docs) -> Tuple[dict[str,int], int]:
     return wc, tot
 
 def _make_snippet_anchor(D: _DocLike, i: int, start_tok: int, end_tok: int) -> tuple[str, int, int]:
+    """
+    Create snippet anchor text for occurrence at token i with context [start_tok, end_tok].
+    Returns (snippet_anchor, start_sent_idx, end_sent_idx).
+    """
     s_idx = D.token_to_sent[i] if i < len(D.token_to_sent) else 0
     start_tok = max(0, min(start_tok, len(D.doc_lemmas) - 1))
     end_tok   = max(0, min(end_tok,   len(D.doc_lemmas) - 1))
@@ -197,6 +216,10 @@ def _precompute_all_docs(
     kv, sif_a, global_wc, total_tokens,
     n_jobs: int
 ) -> List[Dict[str,Any]]:
+    """
+    Precompute per-doc arrays in parallel.
+    Returns list of per-doc dicts with precomputed arrays.
+    """
     doclikes = list(_iter_doclikes(pre_docs))
     # Threaded precompute (BLAS inside get_vector won’t block; read-only kv is safe)
     results: List[Optional[Dict[str,Any]]] = [None]*len(doclikes)
@@ -216,6 +239,9 @@ def _collect_all_occurrences(
     progress: bool = False,
     desc: str = "Snippets: occurrences",
 ) -> List[Dict[str,Any]]:
+    """
+    Collect all occurrences from all docs based on seeds_set and token_window.
+    """
     try:
         from tqdm.auto import tqdm as _tqdm
     except Exception:
@@ -442,6 +468,55 @@ def cluster_snippets_by_centroids(
     n_jobs: int = -1,
     progress: bool = True,
 ) -> dict[str, pd.DataFrame]:
+    """
+    Extract snippets scored against cluster centroids from fitted SSD model.
+    Returns dict with 'pos' and 'neg' DataFrames.
+    Each DataFrame has columns:
+        - centroid_label
+        - profile_id
+        - post_id
+        - cosine
+        - seed
+        - start_token_idx
+        - end_token_idx
+        - start_sent_idx
+        - end_sent_idx
+        - snippet_anchor
+        - essay_text_surface
+        - essay_text_lemmas
+    .
+    Parameters
+    ----------
+    pre_docs : List[Union[PreprocessedDoc, PreprocessedProfile]]
+        Preprocessed documents or profiles to extract snippets from.
+    ssd : fitted SSD model
+        Fitted SSD model exposing `kv` (KeyedVectors) and optionally `lexicon`.
+    pos_clusters : List[dict] | None
+        List of clusters from +β̂ side (each cluster is a dict with 'words' key).
+    neg_clusters : List[dict] | None
+        List of clusters from −β̂ side (each cluster is a dict with 'words' key).
+    token_window : int, optional
+        Token window size around seed words for occurrence context (default is 3).
+    seeds : Iterable[str] | None, optional
+        Iterable of seed words to look for in documents. If None, uses `ssd.lexicon` if available.
+    sif_a : float, optional
+        SIF weighting parameter (default is 1e-3).
+    global_wc : dict[str, int] | None, optional
+        Global word counts. If None, will be computed from `pre_docs`.
+    total_tokens : int | None, optional
+        Total token count. If None, will be computed from `pre_docs`.
+    top_per_cluster : int, optional
+        Number of top snippets to return per cluster (default is 100).
+    n_jobs : int, optional
+        Number of parallel jobs to use (default is -1, meaning all available cores).
+    progress : bool, optional
+        Whether to display a progress bar (default is True).
+
+    Returns
+    -------
+    dict[str, pd.DataFrame]
+        Dictionary with 'pos' and 'neg' DataFrames containing the top snippets per cluster.
+    """
 
     if global_wc is None or total_tokens is None:
         global_wc, total_tokens = _build_global_sif(pre_docs)
@@ -560,6 +635,53 @@ def snippets_along_beta(
     n_jobs: int = -1,
     progress: bool = True,
 ) -> dict[str, pd.DataFrame]:
+    """
+    Extract snippets scored along ±β̂ from fitted SSD model.
+    Returns dict with 'beta_pos' and 'beta_neg' DataFrames.
+    Each DataFrame has columns:
+        - side_label
+        - profile_id
+        - post_id
+        - cosine
+        - seed
+        - start_token_idx
+        - end_token_idx
+        - start_sent_idx
+        - end_sent_idx
+        - snippet_anchor
+        - essay_text_surface
+        - essay_text_lemmas
+    .
+    Parameters
+    ----------
+    pre_docs : List[Union[PreprocessedDoc, PreprocessedProfile]]
+        Preprocessed documents or profiles to extract snippets from.
+    ssd : fitted SSD model
+        Fitted SSD model exposing `kv` (KeyedVectors) and `beta_unit` (unit vector of β̂).
+    token_window : int, optional
+        Token window size around seed occurrences, by default 3.
+    seeds : Iterable[str] | None, optional
+        Iterable of seed lemmas to focus on. If None, uses ssd.lexicon.
+    sif_a : float, optional
+        SIF weighting parameter, by default 1e-3.
+    global_wc : dict[str, int] | None, optional
+        Global word counts. If None, computed from pre_docs.
+    total_tokens : int | None, optional
+        Total token count. If None, computed from pre_docs.
+    top_per_side : int, optional
+        Number of top snippets to return per side (positive/negative), by default 200.
+    min_cosine : float | None, optional
+        Minimum cosine threshold to include a snippet. If None, no thresholding, by default None.
+    n_jobs : int, optional
+        Number of parallel jobs, by default -1 (all available).
+    progress : bool, optional
+        Whether to show progress bars, by default True.
+
+    Returns
+    -------
+    dict[str, pd.DataFrame]
+        Dictionary with 'beta_pos' and 'beta_neg' DataFrames of snippets.
+    """
 
     if global_wc is None or total_tokens is None:
         global_wc, total_tokens = _build_global_sif(pre_docs)

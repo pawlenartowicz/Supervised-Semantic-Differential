@@ -19,6 +19,7 @@ from .core import SSD  # adjust if needed
 # Small math utilities
 # =========================
 def _cosine(u: np.ndarray, v: np.ndarray) -> float:
+    """Cosine similarity between two vectors. Returns NaN if either vector is zero."""
     u = np.asarray(u, dtype=float).ravel()
     v = np.asarray(v, dtype=float).ravel()
     nu = float(np.linalg.norm(u))
@@ -29,6 +30,7 @@ def _cosine(u: np.ndarray, v: np.ndarray) -> float:
 
 
 def _zscore_ignore_nan(x: np.ndarray) -> np.ndarray:
+    """Z-score normalization ignoring NaNs."""
     x = np.asarray(x, dtype=float)
     m = np.nanmean(x)
     s = np.nanstd(x)
@@ -38,6 +40,7 @@ def _zscore_ignore_nan(x: np.ndarray) -> np.ndarray:
 
 
 def _rolling_smooth(x: np.ndarray, window: int = 7, kind: str = "median") -> np.ndarray:
+    """Rolling window smoothing (median or mean), ignoring NaNs."""
     x = np.asarray(x, dtype=float)
     n = len(x)
     out = np.full(n, np.nan, dtype=float)
@@ -58,6 +61,7 @@ def _rolling_smooth(x: np.ndarray, window: int = 7, kind: str = "median") -> np.
 
 
 def _compute_auck(z: np.ndarray, radius: int) -> np.ndarray:
+    """Compute Area Under the Curve of the K-smoothed z-score."""
     z = np.asarray(z, dtype=float)
     n = len(z)
     out = np.full(n, np.nan, dtype=float)
@@ -102,6 +106,24 @@ def _detrend_by_variance(var_explained_percent: np.ndarray, y: np.ndarray):
 # Interpretability aggregate
 # =========================
 def _overall_interpretability(df_clusters: pd.DataFrame, weight_by_size: bool = True) -> dict:
+    """
+    Compute overall interpretability metrics from cluster DataFrame.
+    Parameters
+    ----------
+    df_clusters : pd.DataFrame
+        DataFrame with cluster metrics, must include 'size', 'coherence', 'centroid_cos_beta' columns.
+    weight_by_size : bool, optional
+        Whether to weight means by cluster size (default is True).
+    Returns
+    -------
+    dict
+        A dictionary with keys:
+            - mean_coherence: float
+            - mean_abs_cosb: float
+            - aggregate: float (mean_coherence * mean_abs_cosb)
+            - n_clusters: int
+            - total_size: int
+    """
     if df_clusters is None or len(df_clusters) == 0:
         return dict(
             mean_coherence=np.nan,
@@ -189,6 +211,55 @@ def pca_sweep(
       - stability: RAW, use stab_good_raw = -beta_delta -> z -> AUCK
       - joint_score = mean(interp_auck, stab_auck_raw)
       - pick smallest K among ties
+
+    Parameters
+    ----------
+    kv : KeyedVectors
+        Word embeddings.
+    docs : List[List[str]] | List[List[List[str]]]
+        Documents as lists of tokens or lists of lists of tokens.
+    y : np.ndarray
+        Outcome variable.
+    lexicon : Optional[Set[str]], optional
+        Lexicon of seed words, by default None.
+    use_full_doc : bool, optional
+        Whether to use full document vectors, by default True.
+    pca_k_values : Optional[Sequence[int]], optional
+        Sequence of PCA_K values to try, by default None (20 to 120 step 2).
+    sif_a : float, optional
+        SIF parameter, by default 1e-3.
+    window : Optional[int], optional
+        Context window size for doc vectors, by default None.
+    cluster_topn : int, optional
+        Number of top neighbors to cluster, by default 100.
+    k_min : int, optional
+        Minimum number of clusters, by default 2.
+    k_max : int, optional
+        Maximum number of clusters, by default 5.
+    top_words : int, optional
+        Number of top words per cluster, by default 20.
+    weight_by_size : bool, optional
+        Whether to weight interpretability means by cluster size, by default True.
+    auck_radius : int, optional
+        Radius for AUCK computation, by default 3.
+    beta_smooth_win : int, optional
+        Window size for beta_delta smoothing in plots, by default 7.
+    beta_smooth_kind : str, optional
+        Smoothing kind for beta_delta in plots ("median" or "mean"), by default "median".
+    out_dir : Optional[str], optional
+        Output directory for saving tables/figures, by default None.
+    prefix : str, optional
+        Prefix for output files, by default "pca_k".
+    save_tables : bool, optional
+        Whether to save result tables, by default False.
+    save_figures : bool, optional
+        Whether to save result figures, by default False.
+    verbose : bool, optional
+        Whether to print progress, by default True.
+    Returns
+    -------
+    PCAKSelectionResult
+        Result object with best_k and joined DataFrame.
     """
     if pca_k_values is None:
         pca_k_values = list(range(20, 121, 2))

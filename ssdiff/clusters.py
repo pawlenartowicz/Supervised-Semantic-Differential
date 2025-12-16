@@ -39,6 +39,38 @@ def cluster_top_neighbors(
         min_cluster_size: int = 2,
         side: str = "pos",  # "pos" → +β̂, "neg" → −β̂
 ):
+    """Cluster the top neighbors of ±β̂ into themes using KMeans.
+    Parameters
+    ----------
+    ssd : SSD
+        Fitted SSD instance.
+    topn : int, optional
+        Number of top neighbors to consider for clustering (default is 100).
+    k : int | None, optional
+        Number of clusters to form. If None, k is chosen automatically using silhouette score (default is None).
+    k_min : int, optional
+        Minimum number of clusters to consider when auto-selecting k (default is 2).
+    k_max : int, optional
+        Maximum number of clusters to consider when auto-selecting k (default is 10).
+    restrict_vocab : int, optional
+        Limit neighbors search to the top N most frequent words in the vocabulary (default is 50000).
+    random_state : int, optional
+        Random seed for KMeans (default is 13).
+    min_cluster_size : int, optional
+        Minimum size of clusters to keep (default is 2).
+    side : str, optional
+        Which side to cluster: "pos" for +β̂, "neg" for −β̂ (default is "pos").
+    Returns
+    -------
+    List[dict]
+        A list of clusters with their details.
+
+    ️Raises
+    ------
+    ValueError
+        If there are not enough neighbors to form clusters.
+    """
+
     _require_sklearn()
     from sklearn.cluster import KMeans
     from sklearn.metrics import silhouette_score
