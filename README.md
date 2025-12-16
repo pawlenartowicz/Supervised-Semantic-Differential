@@ -15,6 +15,9 @@ learns a **semantic gradient (β̂)** that best predicts the outcome, and then p
 The goal of the package is to allow psycholinguistic researchers to draw data-driven insights about 
 how people use language depending on their attitudes, traits, or other numeric variables of interest.
 
+The method has been presented in the following preprint:
+https://doi.org/10.31234/osf.io/gvrsb_v1
+
 ---
 
 ## Table of Contents
@@ -450,8 +453,10 @@ from ssdiff import (
 ## Citing & License
 
 - License: MIT (see LICENSE).
-- If you use SSD in published work, please cite the package (and the classic Semantic Differential literature that motivated the method). 
+- If you use SSD in published work, please cite the associated paper.
 - A suggested citation:
+
+Plisiecki, H., Lenartowicz, P., Pokropek, A., Małyska, K., & Flakus, M. (2025). Measuring Individual Differences in Meaning: The Supervised Semantic Differential. PsyArXiv. https://doi.org/10.31234/osf.io/gvrsb_v1
 
 ---
 ## Questions / Contributions
