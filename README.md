@@ -109,16 +109,16 @@ ssd = SSD(
 # 8) Inspect regression readout
 print({
     "R2": ssd.r2,
-    "adj_R2": float(getattr(wa, "r2_adj", float("nan"))),
+    "adj_R2": float(getattr(ssd, "r2_adj", float("nan"))),
     "F": ssd.f_stat,
     "p": ssd.f_pvalue,
     "beta_norm": ssd.beta_norm_stdCN,        # ||β|| in SD(y) per +1.0 cosine
     "delta_per_0.10_raw": ssd.delta_per_0p10_raw,
     "IQR_effect_raw": ssd.iqr_effect_raw,
     "corr_y_pred": ssd.y_corr_pred,
-    "n_raw": int(getattr(wa, "n_raw", len(docs))),
-    "n_kept": int(getattr(wa, "n_kept", len(docs))),
-    "n_dropped": int(getattr(wa, "n_dropped", 0)),    
+    "n_raw": int(getattr(ssd, "n_raw", len(docs))),
+    "n_kept": int(getattr(ssd, "n_kept", len(docs))),
+    "n_dropped": int(getattr(ssd, "n_dropped", 0)),    
 })
 
 # 9) Neighbors
@@ -132,7 +132,7 @@ snips = ssd.cluster_snippets(pre_docs=pre_docs, side="both", window_sentences=1,
 df_pos_snip = snips["pos"]
 df_neg_snip = snips["neg"]
 
-beta_snips = wa.beta_snippets(pre_docs=pre_docs, window_sentences=1, top_per_side=200)
+beta_snips = ssd.beta_snippets(pre_docs=pre_docs, window_sentences=1, top_per_side=200)
 df_beta_pos = beta_snips["beta_pos"]
 df_beta_neg = beta_snips["beta_neg"]
 
