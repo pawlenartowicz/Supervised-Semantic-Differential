@@ -2,18 +2,21 @@
 from __future__ import annotations
 import numpy as np
 from typing import TYPE_CHECKING
+
 from .utils import filtered_neighbors
 
 if TYPE_CHECKING:
     # Only used for hints; not imported at runtime → no circular import
     from .core import SSD
 import warnings
+
 warnings.filterwarnings(
     "ignore",
     message=r"KMeans is known to have a memory leak on Windows with MKL.*",
     category=UserWarning,
     module=r"sklearn\.cluster\._kmeans"
 )
+
 
 def _require_sklearn():
     try:
@@ -23,17 +26,18 @@ def _require_sklearn():
     except Exception:
         raise ImportError("scikit-learn is required for clustering. Install: pip install scikit-learn")
 
+
 def cluster_top_neighbors(
-    ssd: SSD,
-    *,
-    topn: int = 100,
-    k: int | None = None,
-    k_min: int = 2,
-    k_max: int = 10,
-    restrict_vocab: int = 50000,
-    random_state: int = 13,
-    min_cluster_size: int = 2,
-    side: str = "pos",  # "pos" → +β̂, "neg" → −β̂
+        ssd: SSD,
+        *,
+        topn: int = 100,
+        k: int | None = None,
+        k_min: int = 2,
+        k_max: int = 10,
+        restrict_vocab: int = 50000,
+        random_state: int = 13,
+        min_cluster_size: int = 2,
+        side: str = "pos",  # "pos" → +β̂, "neg" → −β̂
 ):
     _require_sklearn()
     from sklearn.cluster import KMeans
@@ -51,7 +55,7 @@ def cluster_top_neighbors(
 
     def choose_k_auto(W, kmin, kmax):
         best_k, best_s = None, -1.0
-        upper = min(kmax, max(kmin, W.shape[0]-1))
+        upper = min(kmax, max(kmin, W.shape[0] - 1))
         for kk in range(max(2, kmin), max(2, upper) + 1):
             km = KMeans(n_clusters=kk, random_state=random_state, n_init="auto")
             labels = km.fit_predict(W)
@@ -94,7 +98,7 @@ def cluster_top_neighbors(
             "coherence": coherence,
             "words": rows,
         })
-    
+
     if side == "pos":
         clusters.sort(key=lambda C: C["centroid_cos_beta"], reverse=True)
     else:

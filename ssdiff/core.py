@@ -7,9 +7,9 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.decomposition import PCA
 import pandas as pd
 
-
 try:
     from scipy import stats as _scistats
+
     _HAS_SCIPY = True
 except Exception:
     _HAS_SCIPY = False
@@ -19,9 +19,9 @@ from .utils import (
     build_doc_vectors,
     filtered_neighbors,
     load_embeddings,
+    _iter_token_lists,
+    build_doc_vectors_grouped
 )
-
-
 
 
 class SSD:
@@ -41,38 +41,61 @@ class SSD:
     """
 
     def __init__(
-        self,
-        kv: Union[KeyedVectors, str],
-        docs: List[Any],
-        y: np.ndarray,
-        lexicon: Any,
-        *,
-        l2_normalize_docs: bool = True,
-        use_unit_beta: bool = True,
-        N_PCA = 20,
-        window: int = 3,
-        SIF_a: float = 1e-3,
+            self,
+            kv: Union[KeyedVectors, str],
+            docs: List[Any],
+            y: np.ndarray,
+            lexicon: Any,
+            *,
+            l2_normalize_docs: bool = True,
+            use_unit_beta: bool = True,
+            N_PCA=20,
+            window: int = 3,
+            SIF_a: float = 1e-3,
+            use_full_doc: bool = False,
     ) -> None:
         self.kv = kv if isinstance(kv, KeyedVectors) else load_embeddings(kv)
         self.docs = docs
         self.y = np.asarray(y)
-        self.lexicon = set(list(lexicon))
+        self.lexicon = set(list(lexicon)) if lexicon is not None else set()
 
-        self.pos_clusters_raw = None   # type: list[dict] | None
-        self.neg_clusters_raw = None   # type: list[dict] | None
+        self.pos_clusters_raw = None  # type: list[dict] | None
+        self.neg_clusters_raw = None  # type: list[dict] | None
 
         self.window = window
         self.SIF_a = SIF_a
+        self.use_full_doc = bool(use_full_doc)
 
-        wc, tot = compute_global_sif(self.docs)
+        # Compute global SIF over ALL token lists (no cross-post windows here; just counts)
+        flat_token_lists = list(_iter_token_lists(self.docs))
+        wc, tot = compute_global_sif(flat_token_lists)
 
-        # Per-essay matrix (drops essays w/o seed contexts)
-        X_raw, keep = build_doc_vectors(
-            self.docs, self.kv, self.lexicon,
-            global_wc=wc, total_tokens=tot, window=self.window, sif_a=self.SIF_a,
+        # Decide how to build PCVs:
+        #   use_full_doc=False → old lexicon-seed windows
+        #   use_full_doc=True  → SIF-weighted full-text vectors (ignore lexicon)
+        mode_vecs = "full" if self.use_full_doc else "seed"
+
+        X_raw, keep = build_doc_vectors_grouped(
+            self.docs,
+            self.kv,
+            self.lexicon,
+            global_wc=wc,
+            total_tokens=tot,
+            window=self.window,
+            sif_a=self.SIF_a,
+            mode=mode_vecs,  # NEW
         )
+
         if not np.any(keep):
-            raise ValueError("No essays contain the lexicon for this concept; nothing to fit.")
+            if self.use_full_doc:
+                raise ValueError(
+                    "No valid document vectors could be built (no tokens with embeddings?)."
+                )
+            else:
+                raise ValueError(
+                    "No items contain the lexicon for this concept; nothing to fit."
+                )
+
         self.keep_mask = keep
         self.n_raw = len(self.docs)
         self.n_kept = int(keep.sum())
@@ -80,7 +103,6 @@ class SSD:
         self.docs_kept = [d for d, k in zip(self.docs, keep) if k]
         self.y_kept = self.y[keep]
         X = X_raw
-
         # Optional row-L2 + doc-level ABTT
         if l2_normalize_docs:
             X = self._row_l2_normalize(X)
@@ -96,6 +118,18 @@ class SSD:
         self.pca = PCA(n_components=N_PCA, svd_solver="full")
         self.z = self.pca.fit_transform(self.Xs)
 
+        evr = getattr(self.pca, "explained_variance_ratio_", None)
+        if evr is not None:
+            self.pca_var_ratio = np.asarray(evr, dtype=float)  # shape: (K,)
+            self.pca_var_ratio_cum = np.cumsum(self.pca_var_ratio)  # shape: (K,)
+            self.pca_var_explained = float(self.pca_var_ratio.sum())  # scalar in [0,1]
+            self.pca_n_components_ = int(getattr(self.pca, "n_components_", len(self.pca_var_ratio)))
+        else:
+            self.pca_var_ratio = None
+            self.pca_var_ratio_cum = None
+            self.pca_var_explained = np.nan
+            self.pca_n_components_ = int(N_PCA)
+
         # Fit β in doc space
         self.use_unit_beta = use_unit_beta
         self.beta = self._fit_beta()
@@ -103,8 +137,6 @@ class SSD:
 
         # Calibration & diagnostics
         self._calibrate_effect()
-
-
 
     # ---------- Public API ----------
     def nbrs(self, sign: int = +1, n: int = 16, restrict_vocab: int = 10000):
@@ -142,7 +174,7 @@ class SSD:
         - shift_signed: dot(word, +β̂_unit) → positive for 'pos' words, negative for 'neg' words
         """
         b = self.beta_unit if getattr(self, "use_unit_beta", True) else self.beta
-        
+
         rows = []
         for side, vec in (("pos", b), ("neg", -b)):
             pairs = filtered_neighbors(self.kv, vec, topn=n)
@@ -178,7 +210,7 @@ class SSD:
         resid = ys - y_pred
         n = len(ys)
         p = len(w_reg)
-        ss_res = float(np.sum(resid**2))
+        ss_res = float(np.sum(resid ** 2))
         ss_tot = float(np.sum((ys - np.mean(ys)) ** 2))
         self.r2 = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0.0
 
@@ -198,8 +230,8 @@ class SSD:
         beta_std = self.pca.components_.T.dot(w_reg)
         scale = np.where(self.scaler_X.scale_ > 0, self.scaler_X.scale_, 1.0)
         beta_docspace = beta_std / scale
-        beta = self._abtt_P_docs.dot(beta_docspace)
-        return beta
+
+        return beta_docspace
 
     def _calibrate_effect(self) -> None:
         """
@@ -355,17 +387,17 @@ class SSD:
         return df_clusters, df_members
 
     def cluster_neighbors(
-        self,
-        *,
-        topn: int = 100,
-        k: int | None = None,
-        k_min: int = 2,
-        k_max: int = 10,
-        restrict_vocab: int = 50000,
-        random_state: int = 13,
-        min_cluster_size: int = 2,
-        top_words: int = 10,
-        verbose: bool = False,
+            self,
+            *,
+            topn: int = 100,
+            k: int | None = None,
+            k_min: int = 2,
+            k_max: int = 10,
+            restrict_vocab: int = 50000,
+            random_state: int = 13,
+            min_cluster_size: int = 2,
+            top_words: int = 10,
+            verbose: bool = False,
     ):
         """
         Convenience: run clustering for both +β̂ and −β̂ and return concatenated DFs.
@@ -380,7 +412,7 @@ class SSD:
             random_state=random_state,
             min_cluster_size=min_cluster_size,
             top_words=top_words,
-            verbose = verbose,
+            verbose=verbose,
         )
         df_neg_clusters, df_neg_members = self.cluster_neighbors_sign(
             side="neg",
@@ -389,11 +421,11 @@ class SSD:
             random_state=random_state,
             min_cluster_size=min_cluster_size,
             top_words=top_words,
-            verbose = verbose,
+            verbose=verbose,
         )
 
         df_clusters = pd.concat([df_pos_clusters, df_neg_clusters], ignore_index=True)
-        df_members  = pd.concat([df_pos_members,  df_neg_members ], ignore_index=True)
+        df_members = pd.concat([df_pos_members, df_neg_members], ignore_index=True)
         return df_clusters, df_members
 
     def cluster_snippets(
@@ -401,7 +433,6 @@ class SSD:
             *,
             pre_docs,
             side: str = "both",  # "pos", "neg", or "both"
-            window_sentences: int = 1,  # [sent-1, sent, sent+1]
             seeds=None,  # defaults to self.lexicon
             top_per_cluster: int = 100,
     ) -> dict:
@@ -441,7 +472,7 @@ class SSD:
             ssd=self,
             pos_clusters=pos_clusters,
             neg_clusters=neg_clusters,
-            token_window = self.window,
+            token_window=self.window,
             seeds=seeds,
             sif_a=self.SIF_a,
             top_per_cluster=top_per_cluster,
@@ -468,7 +499,7 @@ class SSD:
         return snippets_along_beta(
             pre_docs=pre_docs,
             ssd=self,
-            token_window = self.window,
+            token_window=self.window,
             seeds=seeds,
             sif_a=self.SIF_a,
             top_per_side=top_per_side,
@@ -584,6 +615,207 @@ class SSD:
                 cols += ["y_true_std", "y_true_raw"]
             return pd.DataFrame({c: result[c] for c in cols})
         return result
+
+    # ---- ADD THESE METHODS INSIDE class SSD ----
+
+    def select_extreme_docs(
+            self,
+            *,
+            k: int = 200,
+            by: str = "y",  # one of {"y","yhat","cos"}
+            include_dropped: bool = True,
+    ) -> np.ndarray:
+        """
+        Return original doc indices for the bottom-k and top-k by the chosen signal.
+        Signals:
+          - "y"    : raw observed y (self.y)
+          - "yhat" : model prediction in raw units (from ssd_scores)
+          - "cos"  : cosine(x_i, beta_unit)
+
+        include_dropped:
+          - True: ranking considers all docs where the signal is available (NaNs removed).
+          - False: rank only among kept docs (those used in regression).
+        """
+        # pull everything once (fast, no re-fit)
+        sc = self.ssd_scores(include_all=True, return_df=False, include_true=True)
+        keep = sc["kept"]
+        n = len(keep)
+
+        if by == "y":
+            signal = np.asarray(self.y, dtype=float)
+            mask = np.isfinite(signal)
+            if not include_dropped:
+                mask &= keep
+        elif by == "yhat":
+            signal = np.asarray(sc["yhat_raw"], dtype=float)
+            mask = np.isfinite(signal)
+            if not include_dropped:
+                mask &= keep
+        elif by == "cos":
+            signal = np.asarray(sc["cos"], dtype=float)
+            mask = np.isfinite(signal)
+            if not include_dropped:
+                mask &= keep
+        else:
+            raise ValueError("`by` must be one of {'y','yhat','cos'}.")
+
+        idx_all = np.arange(n, dtype=int)
+        idx_valid = idx_all[mask]
+        sig_valid = signal[mask]
+        if len(sig_valid) == 0:
+            return np.array([], dtype=int)
+
+        k = int(k)
+        k = max(0, k)
+        k = min(k, len(sig_valid) // 2)  # ensure we can take bottom & top
+
+        if k == 0:
+            return np.array([], dtype=int)
+
+        # argpartition avoids full sort
+        # bottom-k
+        bot_part = np.argpartition(sig_valid, kth=k - 1)[:k]
+        # top-k
+        top_part = np.argpartition(sig_valid, kth=len(sig_valid) - k)[-k:]
+
+        bottom_idx = idx_valid[bot_part]
+        top_idx = idx_valid[top_part]
+        # combine and return in a stable order (bottom ascending by signal, top descending)
+        bot_sorted = bottom_idx[np.argsort(sig_valid[bot_part])]
+        top_sorted = top_idx[np.argsort(-sig_valid[top_part])]
+        return np.concatenate([bot_sorted, top_sorted])
+
+    @staticmethod
+    def subset_pre_docs_by_idx(
+            pre_docs,
+            idx_keep: set[int],
+    ):
+        """
+        Filter `pre_docs` to a subset corresponding to original doc indices in `idx_keep`.
+        Works for:
+          - List[PreprocessedDoc]        (one pre_doc per doc index)
+          - List[PreprocessedProfile]    (one profile per doc index)
+        Returns (subset_list, kept_original_indices_as_list)
+        The *order* is preserved relative to the original.
+        """
+        if not pre_docs:
+            return [], []
+
+        from .preprocess import PreprocessedDoc, PreprocessedProfile  # local import to avoid cycles
+
+        kept = []
+        kept_idx = []
+        if isinstance(pre_docs[0], PreprocessedDoc):
+            # one item per doc
+            for i, P in enumerate(pre_docs):
+                if i in idx_keep:
+                    kept.append(P)
+                    kept_idx.append(i)
+        elif isinstance(pre_docs[0], PreprocessedProfile):
+            # one profile per doc (author)
+            for i, P in enumerate(pre_docs):
+                if i in idx_keep:
+                    kept.append(P)
+                    kept_idx.append(i)
+        else:
+            # Fallback: assume 1:1 indexing
+            for i, P in enumerate(pre_docs):
+                if i in idx_keep:
+                    kept.append(P)
+                    kept_idx.append(i)
+
+        return kept, kept_idx
+
+    def beta_snippets_extremes(
+            self,
+            *,
+            pre_docs,
+            k: int = 200,
+            by: str = "y",  # {"y","yhat","cos"}
+            token_window: int | None = None,
+            seeds=None,
+            sif_a: float | None = None,
+            top_per_side: int = 200,
+            min_cosine: float | None = None,
+            n_jobs: int = -1,
+            progress: bool = False,
+    ):
+        """
+        Wrapper: take bottom-k and top-k docs by `by` signal, subset pre_docs,
+        then call snippets_along_beta on the subset only.
+        """
+        from .snippets import snippets_along_beta
+
+        idx = self.select_extreme_docs(k=k, by=by, include_dropped=True)
+        if idx.size == 0:
+            return {"beta_pos": pd.DataFrame(), "beta_neg": pd.DataFrame()}
+
+        subset, kept_idx = self.subset_pre_docs_by_idx(pre_docs, set(idx))
+        if not subset:
+            return {"beta_pos": pd.DataFrame(), "beta_neg": pd.DataFrame()}
+
+        return snippets_along_beta(
+            pre_docs=subset,
+            ssd=self,
+            token_window=self.window if token_window is None else int(token_window),
+            seeds=set(seeds or getattr(self, "lexicon", set())),
+            sif_a=self.SIF_a if sif_a is None else float(sif_a),
+            top_per_side=top_per_side,
+            min_cosine=min_cosine,
+            n_jobs=n_jobs,
+            progress=progress,
+        )
+
+    def cluster_snippets_extremes(
+            self,
+            *,
+            pre_docs,
+            k: int = 200,
+            by: str = "y",  # {"y","yhat","cos"}
+            token_window: int | None = None,
+            seeds=None,
+            sif_a: float | None = None,
+            top_per_cluster: int = 100,
+            n_jobs: int = -1,
+            progress: bool = False,
+            side: str = "both",  # "pos","neg","both"  (must have run cluster_neighbors_sign beforehand)
+    ):
+        """
+        Wrapper: take bottom-k and top-k docs by `by` signal, subset pre_docs,
+        then call cluster_snippets_by_centroids on the subset only.
+        """
+        from .snippets import cluster_snippets_by_centroids
+
+        # Ensure clusters exist for requested side(s)
+        need_pos = side in ("pos", "both")
+        need_neg = side in ("neg", "both")
+        pos_clusters = self.pos_clusters_raw if need_pos else []
+        neg_clusters = self.neg_clusters_raw if need_neg else []
+        if need_pos and not pos_clusters:
+            raise RuntimeError("pos-side clusters missing. Run cluster_neighbors_sign(side='pos') first.")
+        if need_neg and not neg_clusters:
+            raise RuntimeError("neg-side clusters missing. Run cluster_neighbors_sign(side='neg') first.")
+
+        idx = self.select_extreme_docs(k=k, by=by, include_dropped=True)
+        if idx.size == 0:
+            return {"pos": pd.DataFrame(), "neg": pd.DataFrame()}
+
+        subset, kept_idx = self.subset_pre_docs_by_idx(pre_docs, set(idx))
+        if not subset:
+            return {"pos": pd.DataFrame(), "neg": pd.DataFrame()}
+
+        return cluster_snippets_by_centroids(
+            pre_docs=subset,
+            ssd=self,
+            pos_clusters=pos_clusters,
+            neg_clusters=neg_clusters,
+            token_window=self.window if token_window is None else int(token_window),
+            seeds=set(seeds or getattr(self, "lexicon", set())),
+            sif_a=self.SIF_a if sif_a is None else float(sif_a),
+            top_per_cluster=top_per_cluster,
+            n_jobs=n_jobs,
+            progress=progress,
+        )
 
     @staticmethod
     def _unit(v: np.ndarray, eps: float = 1e-12) -> np.ndarray:

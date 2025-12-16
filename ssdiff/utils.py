@@ -8,6 +8,7 @@ import gzip
 
 _bad_token = re.compile(r".*\d|^[A-ZĄĆĘŁŃÓŚŹŻ]")
 
+
 def normalize_kv(
     kv: KeyedVectors,
     *,
@@ -97,27 +98,180 @@ def _doc_vector(
     return np.mean(occ, axis=0).astype(np.float64)
 
 
-def filtered_neighbors(
-    kv: KeyedVectors,
-    vec: Union[List[float], np.ndarray],
-    topn: int = 20,
-    cand: int = 2000,
-    restrict: int = 10000,
-):
-    nbrs = kv.similar_by_vector(vec, topn=cand, restrict_vocab=restrict)
-    out = []
-    for w, sim in nbrs:
-        if not _bad_token.match(w):
-            out.append((w, sim))
-            if len(out) >= topn:
-                break
-    return out
-
 
 def _first_line_tokens(path: str) -> list[str]:
     opener = gzip.open if path.lower().endswith(".gz") else open
     with opener(path, "rt", encoding="utf-8", errors="ignore") as f:
         return f.readline().strip().split()
+
+from typing import Iterable
+
+def _iter_token_lists(docs: list) -> Iterable[list[str]]:
+    """
+    Yield token lists from either:
+      - docs = List[List[str]]               (single-level)
+      - docs = List[List[List[str]]]         (profiles with multiple posts)
+    Empty lists are safely skipped.
+    """
+    for item in docs:
+        if not item:
+            continue
+        # single document (list[str])
+        if isinstance(item[0], str):
+            yield item
+        else:
+            # list of posts (list[list[str]])
+            for sub in item:
+                if sub:
+                    yield sub
+
+def _occ_vectors_in_doc(doc, kv, lexicon, wc, tot, window, sif_a):
+    """
+    Return a list of SIF-averaged context vectors for EACH occurrence of a seed in `doc`.
+    Mirrors _doc_vector logic but exposes each occurrence separately.
+    """
+    occ = []
+    D = kv.vector_size
+    for i, token in enumerate(doc):
+        if token not in lexicon:
+            continue
+        start, end = max(0, i - window), min(len(doc), i + window + 1)
+        sum_v = np.zeros(D, dtype=np.float64)
+        w_sum = 0.0
+        for j in range(start, end):
+            if j == i:
+                continue
+            c = doc[j]
+            if c not in kv:
+                continue
+            a = sif_a / (sif_a + wc.get(c, 0) / tot)
+            sum_v += a * kv[c]
+            w_sum += a
+        if w_sum > 0:
+            occ.append(sum_v / w_sum)
+    return occ
+
+def build_doc_vectors_grouped(
+    docs,
+    kv,
+    lexicon,
+    global_wc,
+    total_tokens,
+    window,
+    sif_a,
+    *,
+    mode: str = "seed",   # NEW: "seed" (default) or "full"
+):
+    """
+    docs can be:
+      - List[List[str]]          -> one PCV per doc
+      - List[List[List[str]]]    -> one PCV per profile (aggregate over posts)
+
+    mode:
+      - "seed" : old behavior, use SIF windows around lexicon seeds
+      - "full" : ignore lexicon, use full-doc SIF vectors
+    """
+    if mode not in {"seed", "full"}:
+        raise ValueError("mode must be 'seed' or 'full'.")
+
+    use_seeds = (mode == "seed")
+
+    X_list = []
+    keep_mask = []
+
+    # Detect mode from first non-empty item (flat vs grouped docs)
+    mode_docs = None  # "flat" or "grouped"
+    for it in docs:
+        if it:
+            mode_docs = "flat" if isinstance(it[0], str) else "grouped"
+            break
+    if mode_docs is None:
+        return np.zeros((0, kv.vector_size), dtype=np.float64), np.zeros((0,), dtype=bool)
+
+    # --- FLAT DOCS: List[List[str]] ---
+    if mode_docs == "flat":
+        for d in docs:
+            if not d:
+                keep_mask.append(False)
+                continue
+
+            if use_seeds:
+                # existing behavior via per-occurrence contexts
+                occ = _occ_vectors_in_doc(d, kv, lexicon, global_wc, total_tokens, window, sif_a)
+                if not occ:
+                    keep_mask.append(False)
+                else:
+                    keep_mask.append(True)
+                    X_list.append(np.mean(occ, axis=0).astype(np.float64))
+            else:
+                # NEW: full-doc SIF, no lexicon
+                v = _full_doc_vector(d, kv, global_wc, total_tokens, sif_a)
+                if v is None:
+                    keep_mask.append(False)
+                else:
+                    keep_mask.append(True)
+                    X_list.append(v)
+
+    # --- GROUPED DOCS: List[List[List[str]]] ---
+    else:
+        for posts in docs:
+            if not posts:
+                keep_mask.append(False)
+                continue
+
+            if use_seeds:
+                occ_all = []
+                for p in posts:
+                    if not p:
+                        continue
+                    occ_all.extend(
+                        _occ_vectors_in_doc(p, kv, lexicon, global_wc, total_tokens, window, sif_a)
+                    )
+                if not occ_all:
+                    keep_mask.append(False)
+                else:
+                    keep_mask.append(True)
+                    X_list.append(np.mean(occ_all, axis=0).astype(np.float64))
+            else:
+                # full-doc variant: aggregate all tokens from all posts
+                tokens_all = [t for p in posts for t in p]
+                v = _full_doc_vector(tokens_all, kv, global_wc, total_tokens, sif_a)
+                if v is None:
+                    keep_mask.append(False)
+                else:
+                    keep_mask.append(True)
+                    X_list.append(v)
+
+    X = np.vstack(X_list) if X_list else np.zeros((0, kv.vector_size), dtype=np.float64)
+    return X, np.array(keep_mask, dtype=bool)
+
+
+def _full_doc_vector(
+    tokens, kv, wc, tot, sif_a
+) -> np.ndarray | None:
+    """
+    SIF-weighted mean of *all* tokens in a doc.
+
+    tokens : list[str]
+    wc     : global word counts
+    tot    : global token count
+    """
+    D = kv.vector_size
+    sum_v = np.zeros(D, dtype=np.float64)
+    w_sum = 0.0
+
+    for c in tokens:
+        if c not in kv:
+            continue
+        a = sif_a / (sif_a + wc.get(c, 0) / tot)
+        sum_v += a * kv[c]
+        w_sum += a
+
+    if w_sum == 0.0:
+        return None
+
+    return (sum_v / w_sum).astype(np.float64)
+
 
 def load_embeddings(path: str) -> KeyedVectors:
     """
@@ -155,3 +309,18 @@ def load_embeddings(path: str) -> KeyedVectors:
     # Fallback: try Gensim loader (covers rare cases)
     return KeyedVectors.load(path, mmap="r")
 
+def filtered_neighbors(
+    kv: KeyedVectors,
+    vec: Union[List[float], np.ndarray],
+    topn: int = 20,
+    cand: int = 2000,
+    restrict: int = 10000,
+):
+    nbrs = kv.similar_by_vector(vec, topn=cand, restrict_vocab=restrict)
+    out = []
+    for w, sim in nbrs:
+        if not _bad_token.match(w):
+            out.append((w, sim))
+            if len(out) >= topn:
+                break
+    return out

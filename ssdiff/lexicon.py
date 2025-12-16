@@ -165,7 +165,7 @@ def suggest_lexicon(
             .reset_index(drop=True))
 
 def token_presence_stats(
-    texts: Iterable[str],
+    texts: Iterable[object],
     y: pd.Series | np.ndarray,
     token: str,
     *,
@@ -175,8 +175,35 @@ def token_presence_stats(
 ) -> dict:
     """
     Compute docs count, coverage, balanced coverage, correlation, and rank for a single token.
-    Now with 'verbose' printing. Also returns q1/q4 (quartile coverages).
+    Accepts texts as:
+      - str                          → split() is used
+      - List[str]                    → treated as tokenized document
+      - List[List[str]] (or deeper)  → treated as sentences of tokens (flattened)
     """
+
+    def _doc_token_set(doc) -> set[str]:
+        # Fast, robust flattener to collect strings at any nesting depth.
+        if isinstance(doc, str):
+            return set(doc.split())
+
+        toks: list[str] = []
+        stack = [doc]
+        while stack:
+            cur = stack.pop()
+            if cur is None:
+                continue
+            # Sequence but not a string/bytes
+            if isinstance(cur, (list, tuple)):
+                stack.extend(cur)
+            elif isinstance(cur, (set,)):
+                stack.extend(list(cur))
+            elif isinstance(cur, (str, bytes)):
+                toks.append(cur.decode() if isinstance(cur, bytes) else cur)
+            else:
+                # Ignore other types (numbers, dicts, etc.)
+                pass
+        return set(toks)
+
     # --- coerce inputs ---
     token = str(token)
     if isinstance(y, np.ndarray):
@@ -185,11 +212,19 @@ def token_presence_stats(
         y_series = y.copy()
 
     texts_list = list(texts)
-    pres = np.fromiter((1 if token in t.split() else 0 for t in texts_list),
-                       dtype=np.int8, count=len(texts_list))
+    if len(texts_list) != len(y_series):
+        raise ValueError(f"Length mismatch: texts={len(texts_list)} vs y={len(y_series)}")
 
-    # --- core stats (existing behavior) ---
-    cov_all, cov_bal, corr, rank = _rank_for_token_stats(pres, y_series, n_bins=n_bins, corr_cap=corr_cap)
+    pres = np.fromiter(
+        (1 if token in _doc_token_set(doc) else 0 for doc in texts_list),
+        dtype=np.int8,
+        count=len(texts_list),
+    )
+
+    # --- core stats (existing helpers assumed available) ---
+    cov_all, cov_bal, corr, rank = _rank_for_token_stats(
+        pres, y_series, n_bins=n_bins, corr_cap=corr_cap
+    )
 
     # quartiles (for interpretability)
     bins = _quantile_bins(y_series, n_bins=n_bins)
@@ -210,11 +245,14 @@ def token_presence_stats(
     )
 
     if verbose:
-        print(f"[token] '{token}': "
-              f"docs={out['docs']} | cov_all={out['cov_all']:.3f} | cov_bal={out['cov_bal']:.3f} | "
-              f"q1={out['q1']:.3f} | q4={out['q4']:.3f} | corr={out['corr']:.3f} | rank={out['rank']:.3f}")
+        print(
+            f"[token] '{token}': "
+            f"docs={out['docs']} | cov_all={out['cov_all']:.3f} | cov_bal={out['cov_bal']:.3f} | "
+            f"q1={out['q1']:.3f} | q4={out['q4']:.3f} | corr={out['corr']:.3f} | rank={out['rank']:.3f}"
+        )
 
     return out
+
 
 
 def coverage_by_lexicon(
@@ -229,19 +267,76 @@ def coverage_by_lexicon(
     """
     Summarize coverage for a given lexicon.
 
-    Parameters
-    ----------
-    df_or_texts : DataFrame | Sequence[str] | Sequence[list[str]]
-        If DataFrame, also pass text_col and score_col.
-        Otherwise, pass (texts, y) as a tuple like in suggest_lexicon.
-    lexicon : iterable of str
-        Candidate lexicon words (must match preprocessed tokens).
+    Accepts:
+      - DataFrame + (text_col, score_col) where text_col may be:
+          * raw strings
+          * token lists: List[str]
+          * profiles: List[List[str]]  (multiple independent posts per unit)
+      - Tuple (texts, y), where texts is Sequence of the same forms above.
 
     Returns
     -------
-    summary : dict(docs_any, cov_all, q1, q4, corr_any)
+    summary : dict(
+        docs_any, cov_all, q1, q4, corr_any,
+        hits_mean, hits_median, types_mean, types_median
+    )
     per_token_df : DataFrame(word, docs, cov_all, q1, q4, corr)
     """
+    import numpy as np
+    import pandas as pd
+
+    # --- small internal adapters (robust to nested inputs) --------------------
+    def _as_series_1d(y_like) -> pd.Series:
+        if isinstance(y_like, pd.Series):
+            return y_like.reset_index(drop=True)
+        return pd.Series(y_like, dtype="float64")
+
+    def _z(s: pd.Series) -> np.ndarray:
+        s = s.astype(float)
+        mu = float(s.mean())
+        sd = float(s.std(ddof=0))
+        if sd == 0 or not np.isfinite(sd):
+            return np.zeros(len(s), dtype=float)
+        return ((s - mu) / sd).to_numpy(dtype=float)
+
+    def _quantile_bins(y: pd.Series, n_bins: int = 4) -> np.ndarray:
+        q = pd.qcut(y.rank(method="average"), n_bins, labels=False, duplicates="drop")
+        return q.to_numpy(dtype=int)
+
+    def _to_unit_tokens(unit) -> list[str]:
+        """
+        Normalize a single 'unit' to a flat list of tokens:
+          - str: naive whitespace split
+          - List[str]: already tokenized
+          - List[List[str]]: profile with many posts -> concat tokens
+        """
+        if unit is None:
+            return []
+        if isinstance(unit, str):
+            return unit.split()
+        if isinstance(unit, (list, tuple)):
+            if not unit:
+                return []
+            first = unit[0]
+            if isinstance(first, str):
+                return list(unit)
+            if isinstance(first, (list, tuple)):
+                out = []
+                for post in unit:
+                    if isinstance(post, (list, tuple)):
+                        out.extend([t for t in post if isinstance(t, str)])
+                    elif isinstance(post, str):
+                        out.extend(post.split())
+                return out
+        return str(unit).split()
+
+    def _texts_to_token_lists(texts_like) -> list[list[str]]:
+        return [_to_unit_tokens(u) for u in texts_like]
+
+    def _token_sets(text_lists: list[list[str]]) -> list[set[str]]:
+        return [set(toks) if toks else set() for toks in text_lists]
+
+    # --- coerce inputs --------------------------------------------------------
     if not isinstance(df_or_texts, pd.DataFrame):
         if isinstance(df_or_texts, tuple) and len(df_or_texts) == 2:
             texts, y = df_or_texts
@@ -252,43 +347,70 @@ def coverage_by_lexicon(
     else:
         if not text_col or not score_col:
             raise ValueError("Provide text_col and score_col when using a DataFrame.")
-        s = df_or_texts[text_col].fillna("").astype(str)
+        s = df_or_texts[text_col]
         y = _as_series_1d(df_or_texts[score_col])
         mask = ~y.isna()
-        texts = _texts_to_token_lists(s[mask].tolist())
-        y = y[mask]
+        s = s[mask]
+        y = y[mask].reset_index(drop=True)
+        texts = _texts_to_token_lists(s.tolist())
 
+    # guard: empty after filtering
+    if len(texts) == 0 or len(y) == 0:
+        summary = dict(
+            docs_any=0, cov_all=0.0, q1=0.0, q4=0.0, corr_any=0.0,
+            hits_mean=0.0, hits_median=0.0, types_mean=0.0, types_median=0.0
+        )
+        return summary, pd.DataFrame(columns=["word","docs","cov_all","q1","q4","corr"])
+
+    # --- prep features --------------------------------------------------------
     bins = _quantile_bins(y, n_bins=n_bins)
-    low = np.where(bins == bins.min())[0]
-    high = np.where(bins == bins.max())[0]
+    low_idx = np.where(bins == bins.min())[0]
+    high_idx = np.where(bins == bins.max())[0]
 
     lex = [str(w) for w in lexicon]
     token_sets = _token_sets(texts)
 
-    pres_any = np.array([1 if any(w in ts for w in lex) else 0 for ts in token_sets], dtype=np.int8)
+    # presence of ANY lexicon word per unit
+    pres_any = np.fromiter(
+        (1 if any((w in ts) for w in lex) else 0 for ts in token_sets),
+        dtype=np.int8,
+        count=len(token_sets),
+    )
     y_std = _z(y)
     corr_any = float(np.corrcoef(pres_any, y_std)[0, 1]) if pres_any.std() > 0 else 0.0
 
     overall = float(pres_any.mean()) if len(pres_any) else 0.0
-    q1 = float(pres_any[low].mean()) if len(low) else 0.0
-    q4 = float(pres_any[high].mean()) if len(high) else 0.0
+    q1 = float(pres_any[low_idx].mean()) if len(low_idx) else 0.0
+    q4 = float(pres_any[high_idx].mean()) if len(high_idx) else 0.0
     docs_any = int(pres_any.sum())
 
+    # --- NEW: whole-profile lexicon frequency stats ---------------------------
+    lex_set = set(lex)
+    # total occurrences of any lexicon token in each profile/unit
+    hits_per_unit = np.array([sum(1 for t in toks if t in lex_set) for toks in texts], dtype=np.int32)
+    # number of unique lexicon types present in each unit
+    types_per_unit = np.array([len(set(toks) & lex_set) for toks in texts], dtype=np.int32)
+
+    hits_mean = float(hits_per_unit.mean()) if len(hits_per_unit) else 0.0
+    hits_median = float(np.median(hits_per_unit)) if len(hits_per_unit) else 0.0
+    types_mean = float(types_per_unit.mean()) if len(types_per_unit) else 0.0
+    types_median = float(np.median(types_per_unit)) if len(types_per_unit) else 0.0
+
+    # per-token stats (vectorized presence via set membership)
     rows = []
     for w in lex:
-        pres = np.array([1 if w in ts else 0 for ts in token_sets], dtype=np.int8)
+        pres = np.fromiter(((1 if w in ts else 0) for ts in token_sets),
+                           dtype=np.int8, count=len(token_sets))
         corr = float(np.corrcoef(pres, y_std)[0, 1]) if pres.std() > 0 else 0.0
         rows.append(dict(
             word=w,
             docs=int(pres.sum()),
             cov_all=float(pres.mean()) if len(pres) else 0.0,
-            q1=float(pres[low].mean()) if len(low) else 0.0,
-            q4=float(pres[high].mean()) if len(high) else 0.0,
+            q1=float(pres[low_idx].mean()) if len(low_idx) else 0.0,
+            q4=float(pres[high_idx].mean()) if len(high_idx) else 0.0,
             corr=corr,
         ))
     per_token = pd.DataFrame(rows, columns=["word", "docs", "cov_all", "q1", "q4", "corr"])
-
-
 
     summary = dict(
         docs_any=docs_any,
@@ -296,6 +418,10 @@ def coverage_by_lexicon(
         q1=q1,
         q4=q4,
         corr_any=corr_any,
+        hits_mean=hits_mean,
+        hits_median=hits_median,
+        types_mean=types_mean,
+        types_median=types_median,
     )
 
     per_token = per_token.sort_values(
@@ -309,12 +435,14 @@ def coverage_by_lexicon(
             f"docs_any={docs_any} | cov_all={overall:.3f} | "
             f"q1={q1:.3f} | q4={q4:.3f} | corr_any={corr_any:.3f}"
         )
+        print(
+            f"  hits_mean={hits_mean:.2f} | hits_median={hits_median:.2f} | "
+            f"types_mean={types_mean:.2f} | types_median={types_median:.2f}"
+        )
         if not per_token.empty:
             preview_cols = ["word", "docs", "cov_all", "q1", "q4", "corr"]
             print("\n  per-token:")
             print(per_token.loc[:, preview_cols].head(10).to_string(index=False))
         print("-" * 72)
-
-
 
     return summary, per_token

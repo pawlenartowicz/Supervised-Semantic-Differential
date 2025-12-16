@@ -7,7 +7,7 @@ from .utils import (
 )
 from .lexicon import suggest_lexicon, coverage_by_lexicon, token_presence_stats
 from .preprocess import load_spacy, load_stopwords, preprocess_texts, build_docs_from_preprocessed
-
+from .sweep import pca_sweep
 
 __all__ = [
     "SSD",
@@ -17,4 +17,6 @@ __all__ = [
     "suggest_lexicon", "coverage_by_lexicon", "token_presence_stats",
     "load_spacy", 'load_stopwords', 'preprocess_texts',
     "suggest_lexicon", "coverage_by_lexicon", "token_presence_stats",
+    "pca_sweep"
+
 ]
