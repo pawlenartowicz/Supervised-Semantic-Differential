@@ -27,6 +27,7 @@ https://doi.org/10.31234/osf.io/gvrsb_v1
 - [Core Concepts](#core-concepts)
 - [Preprocessing (spaCy)](#preprocessing-spacy)
 - [Lexicon Utilities](#lexicon-utilities)
+- [Choosing PCA dimensionality (PCA Sweep)](#choosing-pca-dimensionality-pca-sweep)
 - [Fitting SSD](#fitting-ssd)
 - [Neighbors & Clustering](#neighbors--clustering)
 - [Interpreting with Snippets](#interpreting-with-snippets)
@@ -56,7 +57,7 @@ Adjust paths and column names to your data.
 from ssdiff import (
     SSD, load_embeddings, normalize_kv,
     load_spacy, load_stopwords, preprocess_texts, build_docs_from_preprocessed,
-    suggest_lexicon, token_presence_stats, coverage_by_lexicon,
+    suggest_lexicon, token_presence_stats, coverage_by_lexicon, pca_sweep,
 )
 
 import pandas as pd
@@ -89,9 +90,22 @@ y = y[mask].to_numpy()
 # 5) Define a lexicon (tokens must match your preprocessing) Check lexicon utilities section for data-driven selection.
 lexicon = {"concept_keyword_1", "concept_keyword_2", "concept_keyword_3", "concept_keyword_4"} # keywords that define your concept
 
-# 6) Choose PCA dimensionality based on sample size
-n_kept = len(docs)
-PCA_K = min(20, max(3, n_docs // 20))
+# 6) Choose PCA dimensionality based on interpretability + stability
+# This method was not a part of the original SSD paper. It was developed later.
+
+sel = pca_sweep(
+    kv=kv,
+    docs=docs,
+    y=y,
+    lexicon={"concept_keyword_1", "concept_keyword_2", "concept_keyword_3"},
+    use_full_doc=False,
+    pca_k_values=list(range(1, 121, 2)),
+    window=3,      # context window ±3 tokens (same meaning as in SSD)
+    SIF_a=1e-3,
+    prefix="concept",
+)
+
+PCA_K = sel.best_k
 
 # 7) Fit SSD
 ssd = SSD(
@@ -102,7 +116,7 @@ ssd = SSD(
     l2_normalize_docs=True, # normalize per-essay vectors
     N_PCA=PCA_K,
     use_unit_beta=True, # unit β̂ for neighbors/interpretation
-    windpow = 3, # context window ±3 tokens
+    window = 3, # context window ±3 tokens
     SIF_a = 1e-3, # SIF weighting parameter
 )
 
@@ -148,6 +162,9 @@ scores = ssd.ssd_scores(docs, include_all=True)
 - **Per-essay vector**: SIF-weighted average of context vectors around each seed occurrence (±3 tokens), then averaged across occurrences.
 - **SSD fitting**: PCA on standardized doc vectors, OLS from components to standardized outcome 𝑦, then back-project to doc space to get β (the semantic gradient).
 - **Interpretation**: nearest neighbors to +β̂/−β̂, clustering neighbors into themes, and showing original sentences whose local context aligns with centroids or β̂.
+
+
+
 
 ---
 ## Word2Vec Embeddings
@@ -254,30 +271,36 @@ summary, per_tok = coverage_by_lexicon(
     verbose=True
 )
 ```
+
 ---
+
+
 ## Fitting SSD
 
-Instantiate `SSD` with your normalized embeddings, tokenized documents, numeric outcome, and lexicon:
+Instantiate `SSD` with normalized embeddings, tokenized documents, a numeric outcome, and a lexicon
+(defining the concept of interest):
+
 ```python
 from ssdiff import SSD, load_embeddings, normalize_kv
 
 kv = normalize_kv(load_embeddings(MODEL_PATH), l2=True, abtt_m=1)
 
-PCA_K = min(20, max(3, n_docs // 20))
+PCA_K = min(20, max(3, n_docs // 20))  # simple heuristic, or use pca_sweep(...)
 ssd = SSD(
     kv=kv,
     docs=docs,
     y=y,
-    lexicon={"klimat", "klimatyczny", "zmiana"},
-    l2_normalize_docs=True,
+    lexicon={"concept_keyword_1", "concept_keyword_2", "concept_keyword_3"},
     N_PCA=PCA_K,
-    use_unit_beta=True, # unit β̂ for neighbors/interpretation
-    windpow = 3, # context window ±3 tokens
-    SIF_a = 1e-3, # SIF weighting parameter
+    window=3,       # context window ±3 tokens around lexicon hits
+    SIF_a=1e-3,      # SIF weighting parameter
+    use_full_doc=False,
+    use_unit_beta=True,
 )
 
 print(ssd.r2, ssd.f_stat, ssd.f_pvalue)
 ```
+
 Key outputs attached to the instance:
 - `beta` / `beta_unit` — semantic gradient (doc space)
 - `r2`, `f_stat`, `f_pvalue`, 'r2_adj' — regression fit stats
@@ -285,6 +308,112 @@ Key outputs attached to the instance:
 - `delta_per_0p10_raw` — change in raw 𝑦 per +0.10 cosine
 - `iqr_effect_raw` — IQR(of cosine)*slope in raw 𝑦
 - `y_corr_pred` — correlation of standardized 𝑦 with predicted values
+
+
+--- 
+## Choosing PCA dimensionality (PCA Sweep)
+
+The original SSD pipeline applies PCA to document vectors before regression to reduce redundancy and enable fitting on small corpora.
+However, selecting the number of components (`N_PCA = K`) can otherwise become a researcher degree of freedom.
+
+To make this choice more systematic and transparent, `ssdiff` includes a **PCA sweep procedure** that evaluates a sequence of `K` values and selects the most robust solution.
+
+### What PCA Sweep optimizes
+
+For each candidate PCA dimensionality `K`, the sweep fits SSD and tracks:
+
+1) **Interpretability quality**
+   - based on clustering the nearest neighbors at each pole of the semantic gradient (β̂)
+   - aggregate interpretability combines:
+     - cluster coherence (how semantically tight clusters are)
+     - alignment with the semantic gradient (|cos(centroid, β̂)|)
+
+2) **Stability of the semantic gradient**
+   - measured as the cosine change between consecutive gradients:
+     - `beta_delta = 1 - cos(beta_unit(K-Δ), beta_unit(K))`
+   - smaller values mean **more stable** gradients as `K` increases
+
+These signals are smoothed across nearby K values using an **AUCK window**:
+for `auck_radius=r`, the sweep averages across a sliding window of `2r+1` values (edge-safe).
+
+The sweep returns the selected `best_k`, and also provides per-K tables that can be saved for transparency.
+
+
+### Minimal example (PCA Sweep → final SSD)
+
+```python
+from ssdiff import SSD, load_embeddings, normalize_kv, pca_sweep
+
+kv = normalize_kv(load_embeddings(MODEL_PATH), l2=True, abtt_m=1)
+
+# Pick PCA_K automatically with a sweep (robust: interpretability + beta stability)
+sel = pca_sweep(
+    kv=kv,
+    docs=docs,
+    y=y,
+    lexicon={"concept_keyword_1", "concept_keyword_2", "concept_keyword_3"},
+    use_full_doc=False,
+    pca_k_values=list(range(1, 121, 2)),
+    window=3,      # context window ±3 tokens (same meaning as in SSD)
+    SIF_a=1e-3,
+    save_figures=True,
+    out_dir=RESULTS_DIR,
+    prefix="climate",
+)
+
+PCA_K = sel.best_k
+
+ssd = SSD(
+    kv=kv,
+    docs=docs,
+    y=y,
+    lexicon={"concept_keyword_1", "concept_keyword_2", "concept_keyword_3"},
+    N_PCA=PCA_K,
+    use_unit_beta=True,
+    windpow=3,
+    SIF_a=1e-3,
+)
+
+print("PCA_K:", PCA_K)
+print(ssd.r2, ssd.f_stat, ssd.f_pvalue)
+```
+
+
+
+### Sweep outputs
+
+If `save_tables=True`, PCA Sweep saves:
+
+- `{prefix}_pca_k_joint_auck_table.xlsx`
+
+If `save_figures=True`, PCA Sweep saves:
+
+- `{prefix}_sweep_plot.png`
+
+These files document the sweep for transparency and reproducibility.
+
+
+### PCA sweep plot example
+
+<img src="images/sweep_plot.png" width="500">
+
+**Figure. PCA sweep for SSD.**  
+The **blue curve** shows **detrended interpretability** of the SSD solution as a function of the PCA dimensionality **K**.  
+For each **K**, SSD clusters the nearest neighbors of the learned semantic gradient and computes an interpretability score:
+
+**aggregate(K) = weighted_mean(coherence) × weighted_mean(|cos(beta_hat, centroid)|)**,
+
+where both terms are **weighted by cluster size**. The aggregate score is then **detrended** by regressing it on
+**log(% variance explained)** and plotting the resulting residuals (z-scored), so the blue curve reflects interpretability
+**beyond what is trivially expected from retaining more variance at larger K**.
+
+The **orange curve** shows **solution stability**, measured as the change of the unit semantic gradient between consecutive
+K values: **delta_beta(K) = 1 − cos(beta_hat(K−Δ), beta_hat(K))** (smoothed for readability).
+Lower values indicate that increasing K does not substantially rotate the inferred semantic direction.
+
+The **red vertical line** marks the selected **K**, chosen by maximizing a **robust joint score** that averages
+(1) local AUCK-smoothed detrended interpretability and (2) local AUCK-smoothed stability (favoring small delta_beta),
+with ties resolved by selecting the **smallest** K on a plateau.
 
 ---
 ## Neighbors & Clustering

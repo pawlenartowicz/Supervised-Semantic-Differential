@@ -180,7 +180,7 @@ def pca_sweep(
     docs,
     y: np.ndarray,
     lexicon=None,
-    use_full_doc: bool = True,
+    use_full_doc: bool = False,
     pca_k_values: Optional[Sequence[int]] = None,
     sif_a: float = 1e-3,
     window: Optional[int] = None,
@@ -430,12 +430,12 @@ def pca_sweep(
 
         lines1, labels1 = ax1.get_legend_handles_labels()
         lines2, labels2 = ax2.get_legend_handles_labels()
-        ax1.legend(lines1 + lines2, labels1 + labels2, loc="best")
+        # ax1.legend(lines1 + lines2, labels1 + labels2, loc="best")
 
-        plt.title(f"{prefix}: detrended interpretability + beta stability (RAW, joint AUCK)")
+        # plt.title(f"{prefix}: detrended interpretability + beta stability (RAW, joint AUCK)")
         plt.tight_layout()
 
-        out_png = os.path.join(out_dir, f"{prefix}_pca_k_joint_auck_ONEPLOT.png")
+        out_png = os.path.join(out_dir, f"{prefix}_sweep_plot.png")
         plt.savefig(out_png, dpi=300)
         plt.close()
         if verbose:

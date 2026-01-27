@@ -65,6 +65,7 @@ class SSD:
         self.window = window
         self.SIF_a = SIF_a
         self.use_full_doc = bool(use_full_doc)
+        self.N_PCA = N_PCA
 
         # Compute global SIF over ALL token lists (no cross-post windows here; just counts)
         flat_token_lists = list(_iter_token_lists(self.docs))
@@ -115,7 +116,7 @@ class SSD:
         self.Xs = self.scaler_X.fit_transform(self.x)
         self.scaler_y = StandardScaler()
         self.ys = self.scaler_y.fit_transform(self.y_kept.reshape(-1, 1)).ravel()
-        self.pca = PCA(n_components=N_PCA, svd_solver="full")
+        self.pca = PCA(n_components=self.N_PCA, svd_solver="full")
         self.z = self.pca.fit_transform(self.Xs)
 
         evr = getattr(self.pca, "explained_variance_ratio_", None)
