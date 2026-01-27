@@ -395,7 +395,7 @@ These files document the sweep for transparency and reproducibility.
 
 ### PCA sweep plot example
 
-<img src="https://github.com/hplisiecki/Supervised-Semantic-Differential/images/sweep_plot.png" width="500">
+<img src="https://github.com/hplisiecki/Supervised-Semantic-Differential/blob/main/images/sweep_plot.png" width="500">
 
 **Figure. PCA sweep for SSD.**  
 The **blue curve** shows **detrended interpretability** of the SSD solution as a function of the PCA dimensionality **K**.  
