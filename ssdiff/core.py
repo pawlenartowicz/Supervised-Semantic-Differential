@@ -51,7 +51,7 @@ class SSD:
             use_unit_beta: bool = True,
             N_PCA=20,
             window: int = 3,
-            SIF_a: float = 1e-3,
+            sif_a: float = 1e-3,
             use_full_doc: bool = False,
     ) -> None:
         self.kv = kv if isinstance(kv, KeyedVectors) else load_embeddings(kv)
@@ -63,7 +63,7 @@ class SSD:
         self.neg_clusters_raw = None  # type: list[dict] | None
 
         self.window = window
-        self.SIF_a = SIF_a
+        self.sif_a = sif_a
         self.use_full_doc = bool(use_full_doc)
         self.N_PCA = N_PCA
 
@@ -83,7 +83,7 @@ class SSD:
             global_wc=wc,
             total_tokens=tot,
             window=self.window,
-            sif_a=self.SIF_a,
+            sif_a=self.sif_a,
             mode=mode_vecs,  # NEW
         )
 
@@ -478,7 +478,7 @@ class SSD:
             neg_clusters=neg_clusters,
             token_window=self.window,
             seeds=seeds,
-            sif_a=self.SIF_a,
+            sif_a=self.sif_a,
             top_per_cluster=top_per_cluster,
         )
 
@@ -505,7 +505,7 @@ class SSD:
             ssd=self,
             token_window=self.window,
             seeds=seeds,
-            sif_a=self.SIF_a,
+            sif_a=self.sif_a,
             top_per_side=top_per_side,
             min_cosine=min_cosine,
         )
@@ -762,7 +762,7 @@ class SSD:
             ssd=self,
             token_window=self.window if token_window is None else int(token_window),
             seeds=set(seeds or getattr(self, "lexicon", set())),
-            sif_a=self.SIF_a if sif_a is None else float(sif_a),
+            sif_a=self.sif_a,
             top_per_side=top_per_side,
             min_cosine=min_cosine,
             n_jobs=n_jobs,
@@ -777,7 +777,6 @@ class SSD:
             by: str = "y",  # {"y","yhat","cos"}
             token_window: int | None = None,
             seeds=None,
-            sif_a: float | None = None,
             top_per_cluster: int = 100,
             n_jobs: int = -1,
             progress: bool = False,
@@ -814,7 +813,7 @@ class SSD:
             neg_clusters=neg_clusters,
             token_window=self.window if token_window is None else int(token_window),
             seeds=set(seeds or getattr(self, "lexicon", set())),
-            sif_a=self.SIF_a if sif_a is None else float(sif_a),
+            sif_a=self.sif_a,
             top_per_cluster=top_per_cluster,
             n_jobs=n_jobs,
             progress=progress,
