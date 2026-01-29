@@ -281,7 +281,7 @@ def pca_sweep(
                 lexicon=lexicon,
                 use_full_doc=use_full_doc,
                 N_PCA=int(K),
-                SIF_a=sif_a,
+                sif_a=sif_a,
             )
             if window is not None:
                 ssd_kwargs["window"] = window
