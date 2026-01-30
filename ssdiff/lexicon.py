@@ -130,6 +130,10 @@ def suggest_lexicon(
             texts, y = df_or_texts
             texts = _texts_to_token_lists(texts)
             y = _as_series_1d(y)
+            mask = ~y.isna()
+            if not mask.all():
+                texts = [texts[i] for i in range(len(texts)) if mask.iat[i]]
+                y = y[mask].reset_index(drop=True)
         else:
             raise ValueError("If not passing a DataFrame, pass (texts, y) as a tuple.")
     else:
@@ -207,11 +211,16 @@ def token_presence_stats(
     # --- coerce inputs ---
     token = str(token)
     if isinstance(y, np.ndarray):
-        y_series = pd.Series(y)
+        y_series = pd.Series(y, dtype=float)
     else:
         y_series = y.copy()
 
     texts_list = list(texts)
+    mask = ~y_series.isna()
+    if not mask.all():
+        texts_list = [texts_list[i] for i in range(len(texts_list)) if mask.iat[i]]
+        y_series = y_series[mask].reset_index(drop=True)
+
     if len(texts_list) != len(y_series):
         raise ValueError(f"Length mismatch: texts={len(texts_list)} vs y={len(y_series)}")
 
@@ -342,6 +351,10 @@ def coverage_by_lexicon(
             texts, y = df_or_texts
             texts = _texts_to_token_lists(texts)
             y = _as_series_1d(y)
+            mask = ~y.isna()
+            if not mask.all():
+                texts = [texts[i] for i in range(len(texts)) if mask.iat[i]]
+                y = y[mask].reset_index(drop=True)
         else:
             raise ValueError("If not passing a DataFrame, pass (texts, y) as a tuple.")
     else:

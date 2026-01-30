@@ -55,8 +55,12 @@ class SSD:
             use_full_doc: bool = False,
     ) -> None:
         self.kv = kv if isinstance(kv, KeyedVectors) else load_embeddings(kv)
+        self.y = np.asarray(y, dtype=float)
+        mask = np.isfinite(self.y)
+        if not mask.all():
+            docs = [d for d, m in zip(docs, mask) if m]
+            self.y = self.y[mask]
         self.docs = docs
-        self.y = np.asarray(y)
         self.lexicon = set(list(lexicon)) if lexicon is not None else set()
 
         self.pos_clusters_raw = None  # type: list[dict] | None

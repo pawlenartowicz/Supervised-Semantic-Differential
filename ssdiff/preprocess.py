@@ -211,6 +211,9 @@ def preprocess_texts(
         # -------- single-doc mode (old behavior) --------
         texts_str = []
         for t in texts:
+            if t is None or (isinstance(t, float) and t != t):
+                texts_str.append("")
+                continue
             if isinstance(t, bytes):
                 t = t.decode(errors="ignore")
             texts_str.append(t if isinstance(t, str) else str(t))
