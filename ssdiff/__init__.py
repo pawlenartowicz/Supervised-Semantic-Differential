@@ -1,5 +1,6 @@
-# words_apart_old/__init__.py
+# ssdiff/__init__.py
 from .core import SSD
+from .crossgroup import SSDGroup, SSDContrast
 from .clusters import cluster_top_neighbors
 from .utils import (
     load_embeddings, normalize_kv, compute_global_sif,
@@ -11,12 +12,12 @@ from .sweep import pca_sweep
 
 __all__ = [
     "SSD",
+    "SSDGroup",
+    "SSDContrast",
     "cluster_top_neighbors",
     "load_embeddings", "normalize_kv", "compute_global_sif",
     "build_doc_vectors", "filtered_neighbors", "build_docs_from_preprocessed",
     "suggest_lexicon", "coverage_by_lexicon", "token_presence_stats",
-    "load_spacy", 'load_stopwords', 'preprocess_texts',
-    "suggest_lexicon", "coverage_by_lexicon", "token_presence_stats",
-    "pca_sweep"
-
+    "load_spacy", "load_stopwords", "preprocess_texts",
+    "pca_sweep",
 ]

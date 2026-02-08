@@ -20,7 +20,7 @@ __pycache__/
 .pytest_cache/
 .coverage
 htmlcov/
-
+.claude
 # OS junk
 .DS_Store
 Thumbs.db

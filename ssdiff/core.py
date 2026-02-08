@@ -24,7 +24,132 @@ from .utils import (
 )
 
 
-class SSD:
+class _SSDBase:
+    """Shared PCV construction pipeline used by both SSD and SSDGroup."""
+
+    def _build_pcvs(
+        self,
+        kv,
+        docs,
+        lexicon,
+        *,
+        l2_normalize_docs: bool = True,
+        N_PCA: int = 20,
+        window: int = 3,
+        sif_a: float = 1e-3,
+        use_full_doc: bool = False,
+    ) -> None:
+        """
+        Build PCVs from docs, apply optional L2 normalization,
+        fit StandardScaler and PCA. Sets the following attributes:
+
+        self.kv, self.docs, self.lexicon, self.window, self.sif_a,
+        self.use_full_doc, self.N_PCA,
+        self.keep_mask, self.n_raw, self.n_kept, self.n_dropped,
+        self.docs_kept,
+        self.x          — (n_kept, D) doc vectors after optional L2
+        self.scaler_X   — fitted StandardScaler
+        self.Xs         — scaled doc vectors
+        self.pca        — fitted PCA
+        self.z          — PCA-projected doc vectors (n_kept, N_PCA)
+        self.pca_var_ratio, self.pca_var_ratio_cum,
+        self.pca_var_explained, self.pca_n_components_
+        """
+        self.kv = kv if isinstance(kv, KeyedVectors) else load_embeddings(kv)
+        self.docs = docs
+        self.lexicon = set(list(lexicon)) if lexicon is not None else set()
+
+        self.window = window
+        self.sif_a = sif_a
+        self.use_full_doc = bool(use_full_doc)
+        self.N_PCA = N_PCA
+
+        # Compute global SIF over ALL token lists (no cross-post windows here; just counts)
+        flat_token_lists = list(_iter_token_lists(self.docs))
+        wc, tot = compute_global_sif(flat_token_lists)
+
+        # Decide how to build PCVs:
+        #   use_full_doc=False → old lexicon-seed windows
+        #   use_full_doc=True  → SIF-weighted full-text vectors (ignore lexicon)
+        mode_vecs = "full" if self.use_full_doc else "seed"
+
+        X_raw, keep = build_doc_vectors_grouped(
+            self.docs,
+            self.kv,
+            self.lexicon,
+            global_wc=wc,
+            total_tokens=tot,
+            window=self.window,
+            sif_a=self.sif_a,
+            mode=mode_vecs,
+        )
+
+        if not np.any(keep):
+            if self.use_full_doc:
+                raise ValueError(
+                    "No valid document vectors could be built (no tokens with embeddings?)."
+                )
+            else:
+                raise ValueError(
+                    "No items contain the lexicon for this concept; nothing to fit."
+                )
+
+        self.keep_mask = keep
+        self.n_raw = len(self.docs)
+        self.n_kept = int(keep.sum())
+        self.n_dropped = self.n_raw - self.n_kept
+        self.docs_kept = [d for d, k in zip(self.docs, keep) if k]
+        X = X_raw
+        # Optional row-L2 + doc-level ABTT
+        if l2_normalize_docs:
+            X = self._row_l2_normalize(X)
+        self._abtt_mu_docs = np.zeros(X.shape[1], dtype=np.float64)
+        self._abtt_P_docs = np.eye(X.shape[1], dtype=np.float64)
+        self.x = X
+
+        # Standardize & PCA
+        self.scaler_X = StandardScaler()
+        self.Xs = self.scaler_X.fit_transform(self.x)
+        max_components = min(self.Xs.shape[0], self.Xs.shape[1])
+        self.N_PCA = min(self.N_PCA, max_components)
+        self.pca = PCA(n_components=self.N_PCA, svd_solver="full")
+        self.z = self.pca.fit_transform(self.Xs)
+
+        evr = getattr(self.pca, "explained_variance_ratio_", None)
+        if evr is not None:
+            self.pca_var_ratio = np.asarray(evr, dtype=float)
+            self.pca_var_ratio_cum = np.cumsum(self.pca_var_ratio)
+            self.pca_var_explained = float(self.pca_var_ratio.sum())
+            self.pca_n_components_ = int(getattr(self.pca, "n_components_", len(self.pca_var_ratio)))
+        else:
+            self.pca_var_ratio = None
+            self.pca_var_ratio_cum = None
+            self.pca_var_explained = np.nan
+            self.pca_n_components_ = int(N_PCA)
+
+    @staticmethod
+    def _unit(v: np.ndarray, eps: float = 1e-12) -> np.ndarray:
+        n = float(np.linalg.norm(v))
+        return v / max(n, eps)
+
+    @staticmethod
+    def _row_l2_normalize(X: np.ndarray, eps: float = 1e-12) -> np.ndarray:
+        norms = np.linalg.norm(X, axis=1, keepdims=True)
+        norms = np.maximum(norms, eps)
+        return X / norms
+
+    @staticmethod
+    def _apply_abtt_matrix(X: np.ndarray, m: int):
+        mu = X.mean(axis=0, dtype=np.float64)
+        Xc = X - mu
+        U, S, Vt = np.linalg.svd(Xc, full_matrices=False)
+        top = Vt[:m, :]
+        P = np.eye(Vt.shape[1], dtype=np.float64) - top.T @ top
+        Xp = Xc @ P
+        return Xp, mu, P
+
+
+class SSD(_SSDBase):
     """
     Analysis backend: builds per-essay vectors from SIF-weighted contexts around seeds,
     drops essays with no seed contexts, fits PCA→OLS→β (back-projected), and exposes
@@ -54,93 +179,38 @@ class SSD:
             sif_a: float = 1e-3,
             use_full_doc: bool = False,
     ) -> None:
-        self.kv = kv if isinstance(kv, KeyedVectors) else load_embeddings(kv)
+        # 1. Handle y and filter NaN rows from y AND docs BEFORE building PCVs
         self.y = np.asarray(y, dtype=float)
         mask = np.isfinite(self.y)
         if not mask.all():
             docs = [d for d, m in zip(docs, mask) if m]
             self.y = self.y[mask]
-        self.docs = docs
-        self.lexicon = set(list(lexicon)) if lexicon is not None else set()
 
-        self.pos_clusters_raw = None  # type: list[dict] | None
-        self.neg_clusters_raw = None  # type: list[dict] | None
-
-        self.window = window
-        self.sif_a = sif_a
-        self.use_full_doc = bool(use_full_doc)
-        self.N_PCA = N_PCA
-
-        # Compute global SIF over ALL token lists (no cross-post windows here; just counts)
-        flat_token_lists = list(_iter_token_lists(self.docs))
-        wc, tot = compute_global_sif(flat_token_lists)
-
-        # Decide how to build PCVs:
-        #   use_full_doc=False → old lexicon-seed windows
-        #   use_full_doc=True  → SIF-weighted full-text vectors (ignore lexicon)
-        mode_vecs = "full" if self.use_full_doc else "seed"
-
-        X_raw, keep = build_doc_vectors_grouped(
-            self.docs,
-            self.kv,
-            self.lexicon,
-            global_wc=wc,
-            total_tokens=tot,
-            window=self.window,
-            sif_a=self.sif_a,
-            mode=mode_vecs,  # NEW
+        # 2. Shared PCV pipeline
+        self._build_pcvs(
+            kv, docs, lexicon,
+            l2_normalize_docs=l2_normalize_docs,
+            N_PCA=N_PCA, window=window, sif_a=sif_a,
+            use_full_doc=use_full_doc,
         )
 
-        if not np.any(keep):
-            if self.use_full_doc:
-                raise ValueError(
-                    "No valid document vectors could be built (no tokens with embeddings?)."
-                )
-            else:
-                raise ValueError(
-                    "No items contain the lexicon for this concept; nothing to fit."
-                )
+        # 3. Filter y to match keep_mask
+        self.y_kept = self.y[self.keep_mask]
 
-        self.keep_mask = keep
-        self.n_raw = len(self.docs)
-        self.n_kept = int(keep.sum())
-        self.n_dropped = self.n_raw - self.n_kept
-        self.docs_kept = [d for d, k in zip(self.docs, keep) if k]
-        self.y_kept = self.y[keep]
-        X = X_raw
-        # Optional row-L2 + doc-level ABTT
-        if l2_normalize_docs:
-            X = self._row_l2_normalize(X)
-        self._abtt_mu_docs = np.zeros(X.shape[1], dtype=np.float64)
-        self._abtt_P_docs = np.eye(X.shape[1], dtype=np.float64)
-        self.x = X
-
-        # Standardize & PCA
-        self.scaler_X = StandardScaler()
-        self.Xs = self.scaler_X.fit_transform(self.x)
+        # 4. Standardize y
         self.scaler_y = StandardScaler()
         self.ys = self.scaler_y.fit_transform(self.y_kept.reshape(-1, 1)).ravel()
-        self.pca = PCA(n_components=self.N_PCA, svd_solver="full")
-        self.z = self.pca.fit_transform(self.Xs)
 
-        evr = getattr(self.pca, "explained_variance_ratio_", None)
-        if evr is not None:
-            self.pca_var_ratio = np.asarray(evr, dtype=float)  # shape: (K,)
-            self.pca_var_ratio_cum = np.cumsum(self.pca_var_ratio)  # shape: (K,)
-            self.pca_var_explained = float(self.pca_var_ratio.sum())  # scalar in [0,1]
-            self.pca_n_components_ = int(getattr(self.pca, "n_components_", len(self.pca_var_ratio)))
-        else:
-            self.pca_var_ratio = None
-            self.pca_var_ratio_cum = None
-            self.pca_var_explained = np.nan
-            self.pca_n_components_ = int(N_PCA)
+        # 5. Cluster placeholders
+        self.pos_clusters_raw = None
+        self.neg_clusters_raw = None
 
-        # Fit β in doc space
+        # 6. Regression
         self.use_unit_beta = use_unit_beta
         self.beta = self._fit_beta()
         self.beta_unit = self._unit(self.beta) if self.use_unit_beta else self.beta
 
-        # Calibration & diagnostics
+        # 7. Calibration & diagnostics
         self._calibrate_effect()
 
     # ---------- Public API ----------
@@ -822,24 +892,3 @@ class SSD:
             n_jobs=n_jobs,
             progress=progress,
         )
-
-    @staticmethod
-    def _unit(v: np.ndarray, eps: float = 1e-12) -> np.ndarray:
-        n = float(np.linalg.norm(v))
-        return v / max(n, eps)
-
-    @staticmethod
-    def _row_l2_normalize(X: np.ndarray, eps: float = 1e-12) -> np.ndarray:
-        norms = np.linalg.norm(X, axis=1, keepdims=True)
-        norms = np.maximum(norms, eps)
-        return X / norms
-
-    @staticmethod
-    def _apply_abtt_matrix(X: np.ndarray, m: int):
-        mu = X.mean(axis=0, dtype=np.float64)
-        Xc = X - mu
-        U, S, Vt = np.linalg.svd(Xc, full_matrices=False)
-        top = Vt[:m, :]
-        P = np.eye(Vt.shape[1], dtype=np.float64) - top.T @ top
-        Xp = Xc @ P
-        return Xp, mu, P

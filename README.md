@@ -3,8 +3,8 @@
 [![PyPI version](https://img.shields.io/pypi/v/ssdiff.svg)](https://pypi.org/project/ssdiff/)
 
 
-**SSD**  lets you recover **interpretable semantic directions** related to specific concpets directly from open-ended text and relate them to **numeric outcomes** 
-(e.g., psychometric scales, judgments). It builds per-essay concept vectors from **local contexts around seed words**, 
+**SSD**  lets you recover **interpretable semantic directions** related to specific concepts directly from open-ended text and relate them to **numeric outcomes**
+(e.g., psychometric scales, judgments). It builds per-essay concept vectors from **local contexts around seed words**,
 learns a **semantic gradient (β̂)** that best predicts the outcome, and then provides multiple interpretability layers:
 
 - **Nearest neighbors** of each pole (+β̂ / −β̂)
@@ -12,7 +12,9 @@ learns a **semantic gradient (β̂)** that best predicts the outcome, and then p
 - **Text snippets**: top sentences whose local contexts align with each cluster centroid or the β̂ axis
 - **Per-essay scores** (cosine alignments) for further analysis
 
-The goal of the package is to allow psycholinguistic researchers to draw data-driven insights about 
+**SSDGroup** extends SSD to **cross-group comparisons** (e.g., clinical vs. control, different nationalities). Instead of regressing onto a continuous outcome, it computes **group centroid contrasts** in the same concept-vector space and uses **permutation inference** to test whether groups differ in how they represent the concept. The resulting contrast vectors plug directly into the same interpretation pipeline (neighbors, clusters, snippets).
+
+The goal of the package is to allow psycholinguistic researchers to draw data-driven insights about
 how people use language depending on their attitudes, traits, or other numeric variables of interest.
 
 The method has been presented in the following preprint:
@@ -32,6 +34,7 @@ https://doi.org/10.31234/osf.io/gvrsb_v1
 - [Neighbors & Clustering](#neighbors--clustering)
 - [Interpreting with Snippets](#interpreting-with-snippets)
 - [Per-Essay SSD Scores](#per-essay-ssd-scores)
+- [Cross-Group Comparison (SSDGroup)](#cross-group-comparison-ssdgroup)
 - [API Summary](#api-summary)
 - [Citing & License](#citing--license)
 
@@ -539,12 +542,121 @@ Returned columns:
 - `y_true_raw`	True raw outcome (NaN for dropped docs)
 
 ---
+## Cross-Group Comparison (SSDGroup)
+
+When your research question involves **categorical groups** rather than a continuous outcome (e.g., clinical diagnosis, experimental condition, nationality), use `SSDGroup` instead of `SSD`.
+
+`SSDGroup` builds per-essay concept vectors using the same pipeline as `SSD`, then:
+1. Computes **unit-length group centroids** in doc-vector space.
+2. Runs an **omnibus permutation test** (mean pairwise cosine distance between centroids) to test whether any groups differ.
+3. Runs **pairwise permutation tests** with Bonferroni correction.
+4. Constructs **centroid contrast vectors** for each pair, which plug into the same interpretation tools (neighbors, clusters, snippets).
+
+For two groups, the omnibus test is skipped (it is identical to the single pairwise test).
+
+The cross-group extension was introduced in:
+Plisiecki, H., Sterna, A., Maciejewska, E., & Moskalewicz, M. (2026). Computational phenomenology of self and time in borderline and narcissistic personality disorders: Cross-group supervised semantic differential. *PsyArXiv*. [https://doi.org/10.31234/osf.io/r8y6b_v1](https://doi.org/10.31234/osf.io/r8y6b_v1)
+
+### When to use SSDGroup vs SSD
+
+| Scenario | Use |
+|---|---|
+| Continuous outcome (scale score, rating) | `SSD` |
+| Categorical groups (diagnosis, condition) | `SSDGroup` |
+| Continuous outcome AND group labels | Both — `SSD` for the continuous analysis, `SSDGroup` for the group comparison |
+
+Do **not** discretize a continuous variable (e.g., median split) just to use `SSDGroup`. `SSD` with the continuous outcome is strictly more powerful in that case.
+
+### Fitting SSDGroup
+
+```python
+from ssdiff import SSDGroup
+
+sg = SSDGroup(
+    kv=kv,
+    docs=docs,
+    groups=diagnosis_labels,   # e.g. ["BPD", "NPD", "HC", "BPD", ...]
+    lexicon=lexicon,
+    n_perm=5000,               # number of permutations (default 5000)
+    random_state=42,           # for reproducibility
+    window=3,
+    sif_a=1e-3,
+)
+```
+
+Parameters:
+- `kv` — pretrained embeddings (KeyedVectors or path)
+- `docs` — documents as token lists (same format as `SSD`)
+- `groups` — group label per document (same length as `docs`); any hashable type. `None`/`NaN`/empty string entries are dropped.
+- `lexicon` — seed words for the concept
+- `n_perm` — number of permutations for inference (default 5000)
+- `random_state` — RNG seed for reproducibility
+- `l2_normalize_docs`, `window`, `sif_a`, `use_full_doc` — same as `SSD`
+
+### Omnibus and pairwise results
+
+```python
+# Pretty-print all results
+sg.print_results()
+
+# Pairwise results as a DataFrame
+sg.results_table()
+#   group_A  group_B  n_A  n_B  cosine_distance  p_raw  p_corrected  cohens_d  contrast_norm
+```
+
+Key attributes:
+- `sg.omnibus_T` — observed test statistic (mean pairwise cosine distance)
+- `sg.omnibus_p` — permutation p-value
+- `sg.pairwise` — dict mapping `(group_A, group_B)` tuples to result dicts containing `T`, `p_raw`, `p_corrected`, `cohens_d`, `contrast_unit`, etc.
+
+### Interpreting a contrast
+
+Extract a contrast between two groups using `get_contrast()`. The returned `SSDContrast` object exposes the same interpretation API as `SSD` (neighbors, clusters, snippets):
+
+```python
+c = sg.get_contrast("BPD", "NPD")
+
+# Top words along the contrast direction
+# +contrast → more BPD-like, −contrast → more NPD-like
+c.top_words(n=15, verbose=True)
+
+# Cluster themes on both poles
+c.cluster_neighbors(topn=100, verbose=True)
+
+# Text snippets aligned with the contrast
+snips = c.beta_snippets(pre_docs=pre_docs, top_per_side=100)
+df_pos = snips["beta_pos"]   # passages more BPD-like
+df_neg = snips["beta_neg"]   # passages more NPD-like
+
+# Snippets per cluster centroid (requires cluster_neighbors first)
+cluster_snips = c.cluster_snippets(pre_docs=pre_docs, side="both", top_per_cluster=50)
+```
+
+Requesting the reversed contrast flips the direction automatically:
+
+```python
+c_flipped = sg.get_contrast("NPD", "BPD")
+# +contrast is now NPD-like, −contrast is now BPD-like
+```
+
+### Per-participant scores
+
+Project all participants onto a contrast direction for visualization (e.g., violin or density plots):
+
+```python
+scores = sg.contrast_scores("BPD", "NPD")
+# DataFrame with columns: group, cos_to_contrast
+```
+
+---
 ## API Summary
-The `ssd` top-level package re-exports the main objects so you can write:
+The `ssdiff` top-level package re-exports the main objects so you can write:
 
 ```python
 from ssdiff import (
-  SSD,                       # the analysis class (fit, neighbors, clustering, snippets, scores)
+  SSD,                       # continuous outcome analysis
+  SSDGroup,                  # cross-group comparison
+  SSDContrast,               # pairwise contrast (returned by SSDGroup.get_contrast)
   load_embeddings, normalize_kv,
   load_spacy, load_stopwords, preprocess_texts, build_docs_from_preprocessed,
   suggest_lexicon, token_presence_stats, coverage_by_lexicon,
@@ -554,14 +666,33 @@ from ssdiff import (
 ### `SSD` (class)
 
 - `__init__(kv, docs, y, lexicon, *, l2_normalize_docs=True,  N_PCA=20, use_unit_beta=True)`
-- Attributes after fit: `beta`, `beta_unit`, `r2`, `f_stat`, `f_pvalue`, `beta_norm_stdCN`,  
+- Attributes after fit: `beta`, `beta_unit`, `r2`, `f_stat`, `f_pvalue`, `beta_norm_stdCN`,
 `delta_per_0p10_raw`, `iqr_effect_raw`, `y_corr_pred`, `n_kept`, etc.
 - Methods:
   - `nbrs(sign=+1, n=20)` → list[(word, cosine)]
   - `cluster_neighbors_sign(side="pos", topn=100, k=None, k_min=2, k_max=10, restrict_vocab=50000, random_state=13, min_cluster_size=2, top_words=10, verbose=False)` → `(df_clusters, df_members)` and stores raw clusters in `pos_clusters_raw`/`neg_clusters_raw`
-  - `snippets_from_clusters(pre_docs, window_sentences=1, seeds=None, sif_a=1e-3, top_per_cluster=100)` → dict with `"pos"`/`"neg"` DataFrames 
-  - `snippets_along_beta(pre_docs, window_sentences=1, seeds=None, sif_a=1e-3, top_per_side=200)` → dict with `"beta_pos"`/`"beta_neg"` DataFrames 
-  - `ssd_scores(docs)` → numpy array of per-essay cosines
+  - `cluster_snippets(pre_docs, side="both", top_per_cluster=100)` → dict with `"pos"`/`"neg"` DataFrames
+  - `beta_snippets(pre_docs, top_per_side=200)` → dict with `"beta_pos"`/`"beta_neg"` DataFrames
+  - `ssd_scores(include_all=True)` → DataFrame of per-essay scores
+
+### `SSDGroup` (class)
+
+- `__init__(kv, docs, groups, lexicon, *, n_perm=5000, random_state=42, l2_normalize_docs=True, window=3, sif_a=1e-3, use_full_doc=False)`
+- Attributes after fit: `omnibus_T`, `omnibus_p`, `pairwise`, `centroids`, `group_labels`, `G`, `n_kept`, `n_dropped`
+- Methods:
+  - `print_results()` — pretty-print omnibus + pairwise results
+  - `results_table()` → DataFrame of pairwise results
+  - `get_contrast(group_a, group_b)` → `SSDContrast` (auto-flips if needed)
+  - `contrast_scores(group_a, group_b)` → DataFrame with `group` and `cos_to_contrast` columns
+
+### `SSDContrast` (class)
+
+Returned by `SSDGroup.get_contrast()`. Duck-types with `SSD` for interpretation:
+- `nbrs(sign=+1, n=16)` → nearest neighbors to the contrast direction
+- `top_words(n=10, verbose=False)` → DataFrame of top words on both poles
+- `cluster_neighbors(topn=100, verbose=False)` → `(df_clusters, df_members)`
+- `beta_snippets(pre_docs, top_per_side=200)` → dict with `"beta_pos"`/`"beta_neg"` DataFrames
+- `cluster_snippets(pre_docs, side="both", top_per_cluster=100)` → dict with `"pos"`/`"neg"` DataFrames
 
 ### Embeddings
 - `load_embeddings(path)` → `gensim.models.KeyedVectors`
