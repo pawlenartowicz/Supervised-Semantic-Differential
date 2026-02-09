@@ -230,49 +230,75 @@ These helpers make lexicon selection transparent and data-driven (you can also h
 
 ### `suggest_lexicon(...)`
 
-Rank tokens by balanced coverage with a mild penalty for strong correlation with
-- `cov_all`: fraction of essays containing the token (0/1 presence)
-- `cov_bal`: average presence across 𝑛 quantile bins of 𝑦 (default: 4 bins)
-- `corr`: Pearson correlation between 0/1 presence and standardized 𝑦
-- `rank = cov_bal * (1 - min(1, |corr|/corr_cap))` (default `corr_cap=0.30`)
+Rank tokens by balanced coverage with a mild penalty for strong association with the outcome.
+
+All three lexicon utilities accept `var_type='continuous'` (default) or `var_type='categorical'`:
+
+| | `var_type='continuous'` | `var_type='categorical'` |
+|---|---|---|
+| `cov_bal` | average presence across 𝑛 quantile bins of 𝑦 | average presence across group labels |
+| `corr` | Pearson correlation between 0/1 presence and standardized 𝑦 | Cramér's V between 0/1 presence and group label |
+| `q1` / `q4` | coverage in lowest / highest 𝑦 quantile bin | min / max group coverage |
+| `rank` | `cov_bal * (1 - min(1, \|corr\|/corr_cap))` | same formula (Cramér's V replaces Pearson) |
 
 Accepts a DataFrame (`text_col`, `score_col`) or a `(texts, y)` tuple where texts can be raw strings or token lists.
 
 ```python
 from ssdiff import suggest_lexicon
 
-# Using a DataFrame
+# Continuous outcome (default)
 cands_df = suggest_lexicon(df, text_col="lemmatized", score_col="questionnaire_result", top_k=150)
 
 # Or using a tuple (texts, y)
 texts = [" ".join(doc) for doc in docs]
 cands_df2 = suggest_lexicon((docs, y), top_k=150)
+
+# Categorical groups
+cands_cat = suggest_lexicon(df, text_col="lemmatized", score_col="diagnosis", top_k=150, var_type="categorical")
+cands_cat2 = suggest_lexicon((docs, groups), top_k=150, var_type="categorical")
 ```
 ### `token_presence_stats(...)`
 
-Per-token coverage & correlation diagnostics:
+Per-token coverage & association diagnostics:
 ```python
 from ssdiff import token_presence_stats
-stats = token_presence_stats((texts, y), token="concept_keyword_1", n_bins=4, verbose=True)
-print(stats)  # dict: token, docs, cov_all, cov_bal, corr, rank
+
+# Continuous
+stats = token_presence_stats(texts, y, token="concept_keyword_1", n_bins=4, verbose=True)
+print(stats)  # dict: token, docs, cov_all, cov_bal, corr, rank, q1, q4
+
+# Categorical — output also includes group_cov (per-group coverage dict)
+stats = token_presence_stats(texts, groups, token="concept_keyword_1", var_type="categorical", verbose=True)
+print(stats["group_cov"])  # e.g. {"control": 0.45, "depression": 0.62}
 ```
 
 ### `coverage_by_lexicon(...)`
 
 Summary for your chosen lexicon:
-- `summary` : `docs_any`, `cov_all`, `q1`. `q4`, `corr_any`
-  - `q1` / `q4`: coverage within the lowest/highest 𝑦 bins (by quantile)
-- `per_token_df`: stats for each token
+- `summary` : `docs_any`, `cov_all`, `q1`, `q4`, `corr_any`, `hits_mean`, `hits_median`, `types_mean`, `types_median`
+  - `q1` / `q4`: coverage within the lowest/highest 𝑦 bins (continuous) or min/max group coverage (categorical)
+  - when `var_type='categorical'`, summary also includes `group_cov` (per-group coverage dict)
+- `per_token_df`: per-token stats
 
 ```python
 from ssdiff import coverage_by_lexicon
 
+# Continuous
 summary, per_tok = coverage_by_lexicon(
     (texts, y),
     lexicon={"concept_keyword_1", "concept_keyword_2", "concept_keyword_3", "concept_keyword_4"},
     n_bins=4,
-    verbose=True
+    verbose=True,
 )
+
+# Categorical
+summary, per_tok = coverage_by_lexicon(
+    (texts, groups),
+    lexicon={"concept_keyword_1", "concept_keyword_2"},
+    var_type="categorical",
+    verbose=True,
+)
+print(summary["group_cov"])  # e.g. {"control": 0.80, "depression": 0.75}
 ```
 
 ---
@@ -705,9 +731,10 @@ Returned by `SSDGroup.get_contrast()`. Duck-types with `SSD` for interpretation:
 - `build_docs_from_preprocessed(pre_docs)` → list[list[str]] (lemmas for modeling)
 
 ### Lexicon
-- `suggest_lexicon(df_or_tuple, text_col=None, score_col=None, top_k=150, min_docs=5, n_bins=4, corr_cap=0.30)` → DataFrame
-- `token_presence_stats(df_or_tuple, token, n_bins=4, corr_cap=0.30, verbose=False)` → dict
-- `coverage_by_lexicon(df_or_tuple, lexicon, n_bins=4, verbose=False)` → `(summary, per_token_df)`
+- `suggest_lexicon(df_or_tuple, text_col=None, score_col=None, top_k=150, min_docs=5, n_bins=4, corr_cap=0.30, var_type='continuous')` → DataFrame
+- `token_presence_stats(texts, y, token, n_bins=4, corr_cap=0.30, verbose=False, var_type='continuous')` → dict
+- `coverage_by_lexicon(df_or_tuple, text_col=None, score_col=None, lexicon=(), n_bins=4, verbose=False, var_type='continuous')` → `(summary, per_token_df)`
+- `var_type`: `'continuous'` (numeric outcome, default) or `'categorical'` (group labels). When categorical, `corr` is Cramér's V, `cov_bal` is balanced across groups, and `q1`/`q4` are min/max group coverage.
 
 --- 
 ## Citing & License
