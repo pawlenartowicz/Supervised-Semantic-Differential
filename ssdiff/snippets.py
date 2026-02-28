@@ -1,6 +1,7 @@
 # ===== ssdiff/snippets.py =====
 from __future__ import annotations
 from typing import List, Iterable, Iterator, Tuple, Union, Optional, Dict, Any
+import sys
 import numpy as np
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -247,7 +248,7 @@ def _collect_all_occurrences(
     except Exception:
         _tqdm = None
     iterator = doc_arrays
-    if progress and _tqdm is not None:
+    if progress and _tqdm is not None and sys.stderr is not None:
         iterator = _tqdm(iterator, total=len(doc_arrays), desc=desc)
 
     out: List[Dict[str,Any]] = []
@@ -352,7 +353,7 @@ def _collect_sentence_occurrences(
         _tqdm = None
 
     iterator = doc_arrays
-    if progress and _tqdm is not None:
+    if progress and _tqdm is not None and sys.stderr is not None:
         iterator = _tqdm(iterator, total=len(doc_arrays), desc=desc)
 
     out: List[Dict[str, Any]] = []
@@ -438,7 +439,7 @@ def _collect_doc_occurrences(
         _tqdm = None
 
     iterator = doc_arrays
-    if progress and _tqdm is not None:
+    if progress and _tqdm is not None and sys.stderr is not None:
         iterator = _tqdm(iterator, total=len(doc_arrays), desc=desc)
 
     out: List[Dict[str, Any]] = []
