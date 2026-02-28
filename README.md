@@ -20,6 +20,8 @@ how people use language depending on their attitudes, traits, or other numeric v
 The method has been presented in the following preprint:
 https://doi.org/10.31234/osf.io/gvrsb_v1
 
+> **No-code option:** a GUI desktop application for SSD is available at [hplisiecki/SSD_APP](https://github.com/hplisiecki/SSD_APP). It wraps this package into a point-and-click interface with a guided three-stage workflow, interactive lexicon builder, and APA-formatted export — pre-built binaries for Windows, Linux, and macOS are available with no Python installation required.
+
 ---
 
 ## Table of Contents
