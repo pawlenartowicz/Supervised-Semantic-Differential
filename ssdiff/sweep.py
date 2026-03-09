@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
@@ -105,7 +106,9 @@ def _detrend_by_variance(var_explained_percent: np.ndarray, y: np.ndarray):
 # =========================
 # Interpretability aggregate
 # =========================
-def _overall_interpretability(df_clusters: pd.DataFrame, weight_by_size: bool = True) -> dict:
+def _overall_interpretability(
+    df_clusters: pd.DataFrame, weight_by_size: bool = True
+) -> dict:
     """
     Compute overall interpretability metrics from cluster DataFrame.
     Parameters
@@ -265,7 +268,9 @@ def pca_sweep(
         pca_k_values = list(range(20, 121, 2))
 
     if (save_tables or save_figures) and out_dir is None:
-        raise ValueError("If save_tables or save_figures is True, out_dir must be provided.")
+        raise ValueError(
+            "If save_tables or save_figures is True, out_dir must be provided."
+        )
     if out_dir is not None:
         os.makedirs(out_dir, exist_ok=True)
 
@@ -289,7 +294,7 @@ def pca_sweep(
             ssd = SSD(kv, docs, y, **ssd_kwargs)
 
             # var explained
-            var_expl = float(ssd.pca.explained_variance_ratio_.sum() * 100)
+            var_expl = float(ssd.pca_var_explained * 100)
 
             # beta delta
             beta = getattr(ssd, "beta_unit", None)
@@ -313,7 +318,9 @@ def pca_sweep(
                 verbose=False,
                 top_words=top_words,
             )
-            overall = _overall_interpretability(df_clusters, weight_by_size=weight_by_size)
+            overall = _overall_interpretability(
+                df_clusters, weight_by_size=weight_by_size
+            )
 
             rows.append(
                 dict(
@@ -324,7 +331,9 @@ def pca_sweep(
                     aggregate=overall["aggregate"],
                     n_clusters=overall["n_clusters"],
                     total_size=overall["total_size"],
-                    beta_delta_1_minus_cos=float(beta_delta) if np.isfinite(beta_delta) else np.nan,
+                    beta_delta_1_minus_cos=float(beta_delta)
+                    if np.isfinite(beta_delta)
+                    else np.nan,
                 )
             )
 
@@ -404,13 +413,17 @@ def pca_sweep(
         y_left = df["interp_resid_z"].to_numpy(dtype=float)
 
         beta_delta = df["beta_delta_1_minus_cos"].to_numpy(dtype=float)
-        beta_delta_s = _rolling_smooth(beta_delta, window=beta_smooth_win, kind=beta_smooth_kind)
+        beta_delta_s = _rolling_smooth(
+            beta_delta, window=beta_smooth_win, kind=beta_smooth_kind
+        )
 
         c_left = "tab:blue"
         c_right = "tab:orange"
 
         fig, ax1 = plt.subplots()
-        ax1.plot(x, y_left, marker="o", color=c_left, label="detrended interpretability (z)")
+        ax1.plot(
+            x, y_left, marker="o", color=c_left, label="detrended interpretability (z)"
+        )
         ax1.axhline(0.0, linewidth=1, color="0.6")
         ax1.set_xlabel("PCA_K")
         ax1.set_ylabel("Detrended interpretability (z)", color=c_left)
@@ -418,7 +431,8 @@ def pca_sweep(
 
         ax2 = ax1.twinx()
         ax2.plot(
-            x, beta_delta_s,
+            x,
+            beta_delta_s,
             linewidth=2,
             color=c_right,
             label=f"beta_unit change (smoothed 1-cos, {beta_smooth_kind}, w={beta_smooth_win})",

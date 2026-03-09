@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .preprocess import PreprocessedDoc, PreprocessedProfile
 
+
 # ---------- utils ----------
 def _unit(v: np.ndarray, eps: float = 1e-12) -> np.ndarray:
     """
@@ -15,6 +16,7 @@ def _unit(v: np.ndarray, eps: float = 1e-12) -> np.ndarray:
     """
     n = float(np.linalg.norm(v))
     return v / max(n, eps)
+
 
 def _centroid_unit_from_cluster_words(words: list[tuple], kv) -> np.ndarray:
     """
@@ -31,21 +33,34 @@ def _centroid_unit_from_cluster_words(words: list[tuple], kv) -> np.ndarray:
     c = np.mean(np.vstack(vecs), axis=0)
     return _unit(c)
 
+
 # a lightweight “doc-like” view used for both single-doc and per-post in profiles
 class _DocLike:
-    __slots__ = ("profile_id","post_id","sents_surface","doc_lemmas","token_to_sent")
-    def __init__(self, profile_id: int, post_id: int,
-                 sents_surface: List[str],
-                 doc_lemmas: List[str],
-                 token_to_sent: List[int]) -> None:
+    __slots__ = (
+        "profile_id",
+        "post_id",
+        "sents_surface",
+        "doc_lemmas",
+        "token_to_sent",
+    )
+
+    def __init__(
+        self,
+        profile_id: int,
+        post_id: int,
+        sents_surface: List[str],
+        doc_lemmas: List[str],
+        token_to_sent: List[int],
+    ) -> None:
         self.profile_id = profile_id  # for PreprocessedDoc: equals doc_id
-        self.post_id = post_id        # for PreprocessedDoc: 0
+        self.post_id = post_id  # for PreprocessedDoc: 0
         self.sents_surface = sents_surface
         self.doc_lemmas = doc_lemmas
         self.token_to_sent = token_to_sent
 
+
 def _iter_doclikes(
-    pre_docs: List[Union[PreprocessedDoc, PreprocessedProfile]]
+    pre_docs: List[Union[PreprocessedDoc, PreprocessedProfile]],
 ) -> Iterator[_DocLike]:
     """
     Iterate over all docs/posts as _DocLike objects.
@@ -56,28 +71,35 @@ def _iter_doclikes(
     if isinstance(pre_docs[0], PreprocessedDoc):
         for di, P in enumerate(pre_docs):
             yield _DocLike(
-                profile_id=di, post_id=0,
+                profile_id=di,
+                post_id=0,
                 sents_surface=P.sents_surface,
                 doc_lemmas=P.doc_lemmas,
-                token_to_sent=P.token_to_sent
+                token_to_sent=P.token_to_sent,
             )
     else:
         for pi, Prof in enumerate(pre_docs):  # type: ignore
             for pj, (sents, lemmas, tok2sent) in enumerate(
-                zip(Prof.post_sents_surface, Prof.post_doc_lemmas, Prof.post_token_to_sent)
+                zip(
+                    Prof.post_sents_surface,
+                    Prof.post_doc_lemmas,
+                    Prof.post_token_to_sent,
+                )
             ):
                 yield _DocLike(
-                    profile_id=pi, post_id=pj,
+                    profile_id=pi,
+                    post_id=pj,
                     sents_surface=sents,
                     doc_lemmas=lemmas,
-                    token_to_sent=tok2sent
+                    token_to_sent=tok2sent,
                 )
 
-def _build_global_sif(pre_docs) -> Tuple[dict[str,int], int]:
+
+def _build_global_sif(pre_docs) -> Tuple[dict[str, int], int]:
     """
     Build global word counts and total token count from pre_docs.
     """
-    wc: dict[str,int] = {}
+    wc: dict[str, int] = {}
     tot = 0
     for D in _iter_doclikes(pre_docs):
         for t in D.doc_lemmas:
@@ -85,16 +107,21 @@ def _build_global_sif(pre_docs) -> Tuple[dict[str,int], int]:
             tot += 1
     return wc, tot
 
-def _make_snippet_anchor(D: _DocLike, i: int, start_tok: int, end_tok: int) -> tuple[str, int, int]:
+
+def _make_snippet_anchor(
+    D: _DocLike, i: int, start_tok: int, end_tok: int
+) -> tuple[str, int, int]:
     """
     Create snippet anchor text for occurrence at token i with context [start_tok, end_tok].
     Returns (snippet_anchor, start_sent_idx, end_sent_idx).
     """
     s_idx = D.token_to_sent[i] if i < len(D.token_to_sent) else 0
     start_tok = max(0, min(start_tok, len(D.doc_lemmas) - 1))
-    end_tok   = max(0, min(end_tok,   len(D.doc_lemmas) - 1))
-    start_sent = D.token_to_sent[start_tok] if start_tok < len(D.token_to_sent) else s_idx
-    end_sent   = D.token_to_sent[end_tok]   if end_tok   < len(D.token_to_sent) else s_idx
+    end_tok = max(0, min(end_tok, len(D.doc_lemmas) - 1))
+    start_sent = (
+        D.token_to_sent[start_tok] if start_tok < len(D.token_to_sent) else s_idx
+    )
+    end_sent = D.token_to_sent[end_tok] if end_tok < len(D.token_to_sent) else s_idx
 
     if start_sent == s_idx and end_sent == s_idx:
         return D.sents_surface[s_idx], s_idx, s_idx
@@ -102,19 +129,29 @@ def _make_snippet_anchor(D: _DocLike, i: int, start_tok: int, end_tok: int) -> t
     if start_sent < s_idx:
         prev_idx = s_idx - 1
         if prev_idx >= 0:
-            return (D.sents_surface[prev_idx] + " " + D.sents_surface[s_idx]).strip(), prev_idx, s_idx
+            return (
+                (D.sents_surface[prev_idx] + " " + D.sents_surface[s_idx]).strip(),
+                prev_idx,
+                s_idx,
+            )
 
     next_idx = s_idx + 1
     if next_idx < len(D.sents_surface):
-        return (D.sents_surface[s_idx] + " " + D.sents_surface[next_idx]).strip(), s_idx, next_idx
+        return (
+            (D.sents_surface[s_idx] + " " + D.sents_surface[next_idx]).strip(),
+            s_idx,
+            next_idx,
+        )
 
     return D.sents_surface[s_idx], s_idx, s_idx
 
+
 # ---------- vectorized per-doc precompute ----------
 def _precompute_doc_arrays(
-    kv, D: _DocLike,
+    kv,
+    D: _DocLike,
     sif_a: float,
-    global_wc: dict[str,int],
+    global_wc: dict[str, int],
     total_tokens: int,
 ) -> Dict[str, Any]:
     """
@@ -133,7 +170,8 @@ def _precompute_doc_arrays(
     # weights
     w = np.fromiter(
         (sif_a / (sif_a + global_wc.get(t, 0) / total_tokens) for t in toks),
-        dtype=np.float64, count=N
+        dtype=np.float64,
+        count=N,
     )
 
     # vectors (unit rows; zero if OOV)
@@ -146,23 +184,38 @@ def _precompute_doc_arrays(
 
     W = V * w[:, None]
     CW = np.vstack([np.zeros((1, d), dtype=np.float64), np.cumsum(W, axis=0)])
-    return dict(N=N, toks=toks, w=w, V=V, W=W, CW=CW, hit=hit,
-                token_to_sent=D.token_to_sent, sents_surface=D.sents_surface,
-                profile_id=D.profile_id, post_id=D.post_id)
+    return dict(
+        N=N,
+        toks=toks,
+        w=w,
+        V=V,
+        W=W,
+        CW=CW,
+        hit=hit,
+        token_to_sent=D.token_to_sent,
+        sents_surface=D.sents_surface,
+        profile_id=D.profile_id,
+        post_id=D.post_id,
+    )
 
-def _occ_vec(CW: np.ndarray, W: np.ndarray, i: int, L: int, R: int) -> Optional[np.ndarray]:
+
+def _occ_vec(
+    CW: np.ndarray, W: np.ndarray, i: int, L: int, R: int
+) -> Optional[np.ndarray]:
     """Inclusive [L,R], exclude center i. Returns unit vector or None if zero."""
-    L = max(0, L); R = min(W.shape[0]-1, R)
+    L = max(0, L)
+    R = min(W.shape[0] - 1, R)
     if R < L:
         return None
-    S = CW[R+1] - CW[L] - W[i]
+    S = CW[R + 1] - CW[L] - W[i]
     n = float(np.linalg.norm(S))
     if n <= 1e-12:
         return None
     return S / n
 
+
 def _collect_occurrences_for_doc(
-    DA: Dict[str,Any],
+    DA: Dict[str, Any],
     seeds_set: set[str],
     token_window: int,
 ) -> Optional[Dict[str, Any]]:
@@ -182,7 +235,7 @@ def _collect_occurrences_for_doc(
         if v is None:
             continue
         snippet_anchor, s_min, s_max = _make_snippet_anchor(
-            _DL_proxy(DA), i, max(0,L), min(len(toks)-1,R)
+            _DL_proxy(DA), i, max(0, L), min(len(toks) - 1, R)
         )
         occ_vecs.append(v)
         meta.append((i, toks[i], L, R, s_min, s_max, snippet_anchor))
@@ -191,7 +244,7 @@ def _collect_occurrences_for_doc(
 
     occ_mat = np.vstack(occ_vecs)  # (m, d)
     essay_surface = " ".join(DA["sents_surface"])
-    essay_lemmas  = " ".join(toks)
+    essay_lemmas = " ".join(toks)
 
     return dict(
         profile_id=DA["profile_id"],
@@ -199,47 +252,59 @@ def _collect_occurrences_for_doc(
         occ_mat=occ_mat,
         meta=meta,
         essay_surface=essay_surface,
-        essay_lemmas=essay_lemmas
+        essay_lemmas=essay_lemmas,
     )
+
 
 # small helper to reuse the existing _make_snippet_anchor signature without copying arrays around
 class _DL_proxy(_DocLike):
-    def __init__(self, DA: Dict[str,Any]) -> None:
+    def __init__(self, DA: Dict[str, Any]) -> None:
         self.profile_id = DA["profile_id"]
         self.post_id = DA["post_id"]
         self.sents_surface = DA["sents_surface"]
         self.doc_lemmas = DA["toks"]
         self.token_to_sent = DA["token_to_sent"]
 
+
 # ---------- parallel driver ----------
 def _precompute_all_docs(
     pre_docs: List[Union[PreprocessedDoc, PreprocessedProfile]],
-    kv, sif_a, global_wc, total_tokens,
-    n_jobs: int
-) -> List[Dict[str,Any]]:
+    kv,
+    sif_a,
+    global_wc,
+    total_tokens,
+    n_jobs: int,
+) -> List[Dict[str, Any]]:
     """
     Precompute per-doc arrays in parallel.
     Returns list of per-doc dicts with precomputed arrays.
     """
     doclikes = list(_iter_doclikes(pre_docs))
     # Threaded precompute (BLAS inside get_vector won’t block; read-only kv is safe)
-    results: List[Optional[Dict[str,Any]]] = [None]*len(doclikes)
-    with ThreadPoolExecutor(max_workers=(None if n_jobs in (-1, 0, None) else int(n_jobs))) as ex:
-        futs = {ex.submit(_precompute_doc_arrays, kv, D, sif_a, global_wc, total_tokens): idx
-                for idx, D in enumerate(doclikes)}
+    results: List[Optional[Dict[str, Any]]] = [None] * len(doclikes)
+    with ThreadPoolExecutor(
+        max_workers=(None if n_jobs in (-1, 0, None) else int(n_jobs))
+    ) as ex:
+        futs = {
+            ex.submit(
+                _precompute_doc_arrays, kv, D, sif_a, global_wc, total_tokens
+            ): idx
+            for idx, D in enumerate(doclikes)
+        }
         for f in as_completed(futs):
             idx = futs[f]
             results[idx] = f.result()
-    return [r for r in results if r is not None and r.get("N",0) > 0]
+    return [r for r in results if r is not None and r.get("N", 0) > 0]
+
 
 def _collect_all_occurrences(
-    doc_arrays: List[Dict[str,Any]],
+    doc_arrays: List[Dict[str, Any]],
     seeds_set: set[str],
     token_window: int,
     n_jobs: int,
     progress: bool = False,
     desc: str = "Snippets: occurrences",
-) -> List[Dict[str,Any]]:
+) -> List[Dict[str, Any]]:
     """
     Collect all occurrences from all docs based on seeds_set and token_window.
     """
@@ -251,15 +316,21 @@ def _collect_all_occurrences(
     if progress and _tqdm is not None and sys.stderr is not None:
         iterator = _tqdm(iterator, total=len(doc_arrays), desc=desc)
 
-    out: List[Dict[str,Any]] = []
+    out: List[Dict[str, Any]] = []
     # Threading again (occ computations are mostly BLAS on arrays)
-    with ThreadPoolExecutor(max_workers=(None if n_jobs in (-1,0,None) else int(n_jobs))) as ex:
-        futs = [ex.submit(_collect_occurrences_for_doc, DA, seeds_set, token_window) for DA in iterator]
+    with ThreadPoolExecutor(
+        max_workers=(None if n_jobs in (-1, 0, None) else int(n_jobs))
+    ) as ex:
+        futs = [
+            ex.submit(_collect_occurrences_for_doc, DA, seeds_set, token_window)
+            for DA in iterator
+        ]
         for f in as_completed(futs):
             res = f.result()
             if res is not None:
                 out.append(res)
     return out
+
 
 def _collect_sentence_occurrences_for_doc(
     DA: Dict[str, Any],
@@ -279,7 +350,7 @@ def _collect_sentence_occurrences_for_doc(
     if N == 0:
         return None
 
-    W = DA["W"]                  # (N, d), already SIF-weighted
+    W = DA["W"]  # (N, d), already SIF-weighted
     token_to_sent = DA["token_to_sent"]
     sents_surface = DA["sents_surface"]
 
@@ -309,22 +380,20 @@ def _collect_sentence_occurrences_for_doc(
         v = sum_vec / n
 
         start_tok = min(idxs)
-        end_tok   = max(idxs)
+        end_tok = max(idxs)
         snippet = sents_surface[s_idx] if s_idx < len(sents_surface) else ""
 
         # meta fields mirror the seed-based variant:
         # (i, seed, L, R, s_min, s_max, snippet)
         occ_vecs.append(v)
-        meta.append(
-            (start_tok, "<SENT>", start_tok, end_tok, s_idx, s_idx, snippet)
-        )
+        meta.append((start_tok, "<SENT>", start_tok, end_tok, s_idx, s_idx, snippet))
 
     if not occ_vecs:
         return None
 
     occ_mat = np.vstack(occ_vecs)
     essay_surface = " ".join(sents_surface)
-    essay_lemmas  = " ".join(toks)
+    essay_lemmas = " ".join(toks)
 
     return dict(
         profile_id=DA["profile_id"],
@@ -357,8 +426,13 @@ def _collect_sentence_occurrences(
         iterator = _tqdm(iterator, total=len(doc_arrays), desc=desc)
 
     out: List[Dict[str, Any]] = []
-    with ThreadPoolExecutor(max_workers=(None if n_jobs in (-1, 0, None) else int(n_jobs))) as ex:
-        futs = [ex.submit(_collect_sentence_occurrences_for_doc, DA, token_window) for DA in iterator]
+    with ThreadPoolExecutor(
+        max_workers=(None if n_jobs in (-1, 0, None) else int(n_jobs))
+    ) as ex:
+        futs = [
+            ex.submit(_collect_sentence_occurrences_for_doc, DA, token_window)
+            for DA in iterator
+        ]
         for f in as_completed(futs):
             res = f.result()
             if res is not None:
@@ -392,7 +466,7 @@ def _collect_doc_occurrences_for_doc(
     v = sum_vec / n
 
     start_tok = 0
-    end_tok   = len(toks) - 1
+    end_tok = len(toks) - 1
     sents_surface = DA["sents_surface"]
     snippet = " ".join(sents_surface) if sents_surface else ""
 
@@ -401,18 +475,18 @@ def _collect_doc_occurrences_for_doc(
     occ_mat = v.reshape(1, -1)
     meta = [
         (
-            0,                    # i (we can treat as first token)
-            "<DOC>",              # seed placeholder
+            0,  # i (we can treat as first token)
+            "<DOC>",  # seed placeholder
             start_tok,
             end_tok,
-            0,                    # start_sent_idx
+            0,  # start_sent_idx
             max(0, len(sents_surface) - 1),  # end_sent_idx
             snippet,
         )
     ]
 
     essay_surface = snippet
-    essay_lemmas  = " ".join(toks)
+    essay_lemmas = " ".join(toks)
 
     return dict(
         profile_id=DA["profile_id"],
@@ -443,13 +517,17 @@ def _collect_doc_occurrences(
         iterator = _tqdm(iterator, total=len(doc_arrays), desc=desc)
 
     out: List[Dict[str, Any]] = []
-    with ThreadPoolExecutor(max_workers=(None if n_jobs in (-1, 0, None) else int(n_jobs))) as ex:
+    with ThreadPoolExecutor(
+        max_workers=(None if n_jobs in (-1, 0, None) else int(n_jobs))
+    ) as ex:
         futs = [ex.submit(_collect_doc_occurrences_for_doc, DA) for DA in iterator]
         for f in as_completed(futs):
             res = f.result()
             if res is not None:
                 out.append(res)
     return out
+
+
 ############################
 
 
@@ -457,9 +535,9 @@ def _collect_doc_occurrences(
 def cluster_snippets_by_centroids(
     *,
     pre_docs: List[Union[PreprocessedDoc, PreprocessedProfile]],
-    ssd,                                # fitted SSD (must expose kv and lexicon)
-    pos_clusters: List[dict] | None,    # clusters from +β̂
-    neg_clusters: List[dict] | None,    # clusters from −β̂
+    ssd,  # fitted SSD (must expose kv and lexicon)
+    pos_clusters: List[dict] | None,  # clusters from +β̂
+    neg_clusters: List[dict] | None,  # clusters from −β̂
     token_window: int = 3,
     seeds: Iterable[str] | None = None,
     sif_a: float = 1e-3,
@@ -527,7 +605,7 @@ def cluster_snippets_by_centroids(
 
     # targets (cluster centroids)
     targets: List[np.ndarray] = []
-    labels:  List[str] = []
+    labels: List[str] = []
 
     def _add_side(clusters: Optional[List[dict]], side: str):
         if not clusters:
@@ -557,7 +635,9 @@ def cluster_snippets_by_centroids(
     #     occs = _collect_sentence_occurrences(doc_arrays, token_window, n_jobs, progress)
 
     # 1) precompute per-doc arrays once (parallel)
-    doc_arrays = _precompute_all_docs(pre_docs, kv, sif_a, global_wc, total_tokens, n_jobs)
+    doc_arrays = _precompute_all_docs(
+        pre_docs, kv, sif_a, global_wc, total_tokens, n_jobs
+    )
 
     # 2) collect occurrences:
     #    - if we have seeds -> seed-based windows (old behavior)
@@ -578,29 +658,30 @@ def cluster_snippets_by_centroids(
             desc="Snippets: docs",
         )
 
-
     # 3) score all occurrences against all targets in one BLAS call
     rows = []
-    for O in occs:
-        Omat = O["occ_mat"]                   # (m, d)
-        C = Omat @ T.T                        # (m, K)
-        for r, (i, seed, L, R, smin, smax, snippet) in enumerate(O["meta"]):
-            cos_row = C[r]                    # (K,)
+    for occ in occs:
+        Omat = occ["occ_mat"]  # (m, d)
+        C = Omat @ T.T  # (m, K)
+        for r, (i, seed, L, R, smin, smax, snippet) in enumerate(occ["meta"]):
+            cos_row = C[r]  # (K,)
             for k, lab in enumerate(labels):
-                rows.append(dict(
-                    centroid_label=lab,
-                    profile_id=O["profile_id"],
-                    post_id=O["post_id"],
-                    cosine=float(cos_row[k]),
-                    seed=seed,
-                    start_token_idx=max(0, L),
-                    end_token_idx=max(0, R),
-                    start_sent_idx=smin,
-                    end_sent_idx=smax,
-                    snippet_anchor=snippet,
-                    essay_text_surface=O["essay_surface"],
-                    essay_text_lemmas=O["essay_lemmas"],
-                ))
+                rows.append(
+                    dict(
+                        centroid_label=lab,
+                        profile_id=occ["profile_id"],
+                        post_id=occ["post_id"],
+                        cosine=float(cos_row[k]),
+                        seed=seed,
+                        start_token_idx=max(0, L),
+                        end_token_idx=max(0, R),
+                        start_sent_idx=smin,
+                        end_sent_idx=smax,
+                        snippet_anchor=snippet,
+                        essay_text_surface=occ["essay_surface"],
+                        essay_text_lemmas=occ["essay_lemmas"],
+                    )
+                )
 
     if not rows:
         return {"pos": pd.DataFrame(), "neg": pd.DataFrame()}
@@ -612,8 +693,8 @@ def cluster_snippets_by_centroids(
     )
     df = (
         df.groupby("centroid_label", group_keys=False)
-          .head(top_per_cluster)
-          .reset_index(drop=True)
+        .head(top_per_cluster)
+        .reset_index(drop=True)
     )
 
     pos_mask = df["centroid_label"].str.startswith("pos_")
@@ -622,10 +703,11 @@ def cluster_snippets_by_centroids(
         "neg": df[~pos_mask].reset_index(drop=True),
     }
 
+
 def snippets_along_beta(
     *,
     pre_docs: List[Union[PreprocessedDoc, PreprocessedProfile]],
-    ssd,                                # fitted SSD (must expose beta_unit and kv)
+    ssd,  # fitted SSD (must expose beta_unit and kv)
     token_window: int = 3,
     seeds: Iterable[str] | None = None,
     sif_a: float = 1e-3,
@@ -692,65 +774,84 @@ def snippets_along_beta(
     seeds_set = set(seeds or getattr(ssd, "lexicon", []))
 
     # 1) precompute per-doc arrays once (parallel)
-    doc_arrays = _precompute_all_docs(pre_docs, kv, sif_a, global_wc, total_tokens, n_jobs)
+    doc_arrays = _precompute_all_docs(
+        pre_docs, kv, sif_a, global_wc, total_tokens, n_jobs
+    )
 
     # 2) collect occurrences:
     #    - seed-based if seeds_set not empty
     #    - sentence-based fallback if no seeds
     if seeds_set:
-        occs = _collect_all_occurrences(doc_arrays, seeds_set, token_window, n_jobs, progress)
+        occs = _collect_all_occurrences(
+            doc_arrays, seeds_set, token_window, n_jobs, progress
+        )
     else:
         occs = _collect_sentence_occurrences(doc_arrays, token_window, n_jobs, progress)
 
     # 3) score against ±β in one go
     rows_pos, rows_neg = [], []
-    for O in occs:
-        Omat = O["occ_mat"]  # (m, d)
+    for occ in occs:
+        Omat = occ["occ_mat"]  # (m, d)
         cos_pos = Omat @ b_unit
         cos_neg = -cos_pos
 
-        for r, (i, seed, L, R, smin, smax, snippet) in enumerate(O["meta"]):
+        for r, (i, seed, L, R, smin, smax, snippet) in enumerate(occ["meta"]):
             cp = float(cos_pos[r])
             cn = float(cos_neg[r])
 
             if (min_cosine is None) or (cp >= min_cosine):
-                rows_pos.append(dict(
-                    side_label="beta_pos",
-                    profile_id=O["profile_id"],
-                    post_id=O["post_id"],
-                    cosine=cp,
-                    seed=seed,
-                    start_token_idx=max(0, L),
-                    end_token_idx=max(0, R),
-                    start_sent_idx=smin,
-                    end_sent_idx=smax,
-                    snippet_anchor=snippet,
-                    essay_text_surface=O["essay_surface"],
-                    essay_text_lemmas=O["essay_lemmas"],
-                ))
+                rows_pos.append(
+                    dict(
+                        side_label="beta_pos",
+                        profile_id=occ["profile_id"],
+                        post_id=occ["post_id"],
+                        cosine=cp,
+                        seed=seed,
+                        start_token_idx=max(0, L),
+                        end_token_idx=max(0, R),
+                        start_sent_idx=smin,
+                        end_sent_idx=smax,
+                        snippet_anchor=snippet,
+                        essay_text_surface=occ["essay_surface"],
+                        essay_text_lemmas=occ["essay_lemmas"],
+                    )
+                )
             if (min_cosine is None) or (cn >= min_cosine):
-                rows_neg.append(dict(
-                    side_label="beta_neg",
-                    profile_id=O["profile_id"],
-                    post_id=O["post_id"],
-                    cosine=cn,
-                    seed=seed,
-                    start_token_idx=max(0, L),
-                    end_token_idx=max(0, R),
-                    start_sent_idx=smin,
-                    end_sent_idx=smax,
-                    snippet_anchor=snippet,
-                    essay_text_surface=O["essay_surface"],
-                    essay_text_lemmas=O["essay_lemmas"],
-                ))
+                rows_neg.append(
+                    dict(
+                        side_label="beta_neg",
+                        profile_id=occ["profile_id"],
+                        post_id=occ["post_id"],
+                        cosine=cn,
+                        seed=seed,
+                        start_token_idx=max(0, L),
+                        end_token_idx=max(0, R),
+                        start_sent_idx=smin,
+                        end_sent_idx=smax,
+                        snippet_anchor=snippet,
+                        essay_text_surface=occ["essay_surface"],
+                        essay_text_lemmas=occ["essay_lemmas"],
+                    )
+                )
 
     def _finalize(rows):
         if not rows:
-            return pd.DataFrame(columns=[
-                "side_label","profile_id","post_id","cosine","seed",
-                "start_token_idx","end_token_idx","start_sent_idx","end_sent_idx",
-                "snippet_anchor","essay_text_surface","essay_text_lemmas"
-            ])
+            return pd.DataFrame(
+                columns=[
+                    "side_label",
+                    "profile_id",
+                    "post_id",
+                    "cosine",
+                    "seed",
+                    "start_token_idx",
+                    "end_token_idx",
+                    "start_sent_idx",
+                    "end_sent_idx",
+                    "snippet_anchor",
+                    "essay_text_surface",
+                    "essay_text_lemmas",
+                ]
+            )
         df = (
             pd.DataFrame(rows)
             .sort_values(["cosine"], ascending=[False])

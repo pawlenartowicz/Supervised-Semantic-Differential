@@ -1,16 +1,18 @@
 # ===== ssdiff/preprocess.py (UNIFIED, BACKWARDS-COMPATIBLE) =====
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import List, Sequence, Optional, Union, Iterable, Tuple
+from typing import List, Sequence, Optional, Union, Tuple
 import re
 import requests
-import spacy
 from functools import lru_cache
+
+import spacy
 
 try:
     from tqdm.auto import tqdm as _tqdm
 except Exception:
     _tqdm = None
+
 
 # ---------- stopwords ----------
 @lru_cache(maxsize=16)
@@ -38,7 +40,6 @@ def load_stopwords(
             raise ValueError("Fetched Polish stopword list is empty.")
         return [w.lower() for w in words] if lowercase else words
 
-    # Non-Polish: use spaCy
     nlp_blank = spacy.blank(lang)
     sw = getattr(nlp_blank.Defaults, "stop_words", None)
     if not sw:
@@ -59,8 +60,11 @@ def load_spacy(
     Backwards compatible with older usage: load_spacy("pl_core_news_sm").
     """
     if not model or not isinstance(model, str) or not model.strip():
-        print("✖ Provide a spaCy model name (e.g., 'pl_core_news_sm' or 'en_core_web_sm').")
+        print(
+            "✖ Provide a spaCy model name (e.g., 'pl_core_news_sm' or 'en_core_web_sm')."
+        )
         return None
+
     try:
         nlp = spacy.load(model, disable=list(disable))
         # ensure we have sentence boundaries
@@ -223,16 +227,20 @@ def preprocess_texts(
             it = tq(it, total=len(texts_str), desc=progress_desc)
 
         for doc in it:
-            s_surface, s_lemmas, doc_lemmas, s_spans, token_to_sent, s_kept_idx = _extract_from_doc(doc, stopset)
-            out.append(PreprocessedDoc(
-                raw=doc.text,
-                sents_surface=s_surface,
-                sents_lemmas=s_lemmas,
-                doc_lemmas=doc_lemmas,
-                sent_char_spans=s_spans,
-                token_to_sent=token_to_sent,
-                sents_kept_idx=s_kept_idx,
-            ))
+            s_surface, s_lemmas, doc_lemmas, s_spans, token_to_sent, s_kept_idx = (
+                _extract_from_doc(doc, stopset)
+            )
+            out.append(
+                PreprocessedDoc(
+                    raw=doc.text,
+                    sents_surface=s_surface,
+                    sents_lemmas=s_lemmas,
+                    doc_lemmas=doc_lemmas,
+                    sent_char_spans=s_spans,
+                    token_to_sent=token_to_sent,
+                    sents_kept_idx=s_kept_idx,
+                )
+            )
         return out
 
     # ================== PROFILE MODE (nested lists) ==================
@@ -254,15 +262,17 @@ def preprocess_texts(
 
     # emit leading empty profiles (length==0)
     while prof_idx < len(lengths) and remaining == 0:
-        out_profiles.append(PreprocessedProfile(
-            raw_posts=[],
-            post_sents_surface=[],
-            post_sents_lemmas=[],
-            post_doc_lemmas=[],
-            post_sent_char_spans=[],
-            post_token_to_sent=[],
-            post_sents_kept_idx=[],
-        ))
+        out_profiles.append(
+            PreprocessedProfile(
+                raw_posts=[],
+                post_sents_surface=[],
+                post_sents_lemmas=[],
+                post_doc_lemmas=[],
+                post_sent_char_spans=[],
+                post_token_to_sent=[],
+                post_sents_kept_idx=[],
+            )
+        )
         prof_idx += 1
         remaining = lengths[prof_idx] if prof_idx < len(lengths) else 0
 
@@ -275,7 +285,9 @@ def preprocess_texts(
     cur_kept_idx: List[List[List[int]]] = []
 
     for doc in pit:
-        s_surface, s_lemmas, doc_lemmas, s_spans, token_to_sent, s_kept_idx = _extract_from_doc(doc, stopset)
+        s_surface, s_lemmas, doc_lemmas, s_spans, token_to_sent, s_kept_idx = (
+            _extract_from_doc(doc, stopset)
+        )
 
         cur_surface.append(s_surface)
         cur_lemmas.append(s_lemmas)
@@ -286,15 +298,17 @@ def preprocess_texts(
         remaining -= 1
 
         if remaining == 0:
-            out_profiles.append(PreprocessedProfile(
-                raw_posts=posts_per_profile[prof_idx],
-                post_sents_surface=cur_surface,
-                post_sents_lemmas=cur_lemmas,
-                post_doc_lemmas=cur_docs,
-                post_sent_char_spans=cur_spans,
-                post_token_to_sent=cur_tok2sent,
-                post_sents_kept_idx=cur_kept_idx,
-            ))
+            out_profiles.append(
+                PreprocessedProfile(
+                    raw_posts=posts_per_profile[prof_idx],
+                    post_sents_surface=cur_surface,
+                    post_sents_lemmas=cur_lemmas,
+                    post_doc_lemmas=cur_docs,
+                    post_sent_char_spans=cur_spans,
+                    post_token_to_sent=cur_tok2sent,
+                    post_sents_kept_idx=cur_kept_idx,
+                )
+            )
             prof_idx += 1
 
             # reset accumulators
@@ -305,36 +319,40 @@ def preprocess_texts(
             if prof_idx < len(lengths):
                 remaining = lengths[prof_idx]
                 while prof_idx < len(lengths) and remaining == 0:
-                    out_profiles.append(PreprocessedProfile(
-                        raw_posts=[],
-                        post_sents_surface=[],
-                        post_sents_lemmas=[],
-                        post_doc_lemmas=[],
-                        post_sent_char_spans=[],
-                        post_token_to_sent=[],
-                        post_sents_kept_idx=[],
-                    ))
+                    out_profiles.append(
+                        PreprocessedProfile(
+                            raw_posts=[],
+                            post_sents_surface=[],
+                            post_sents_lemmas=[],
+                            post_doc_lemmas=[],
+                            post_sent_char_spans=[],
+                            post_token_to_sent=[],
+                            post_sents_kept_idx=[],
+                        )
+                    )
                     prof_idx += 1
                     remaining = lengths[prof_idx] if prof_idx < len(lengths) else 0
 
     # trailing empty profiles
     while prof_idx < len(lengths):
-        out_profiles.append(PreprocessedProfile(
-            raw_posts=[],
-            post_sents_surface=[],
-            post_sents_lemmas=[],
-            post_doc_lemmas=[],
-            post_sent_char_spans=[],
-            post_token_to_sent=[],
-            post_sents_kept_idx=[],
-        ))
+        out_profiles.append(
+            PreprocessedProfile(
+                raw_posts=[],
+                post_sents_surface=[],
+                post_sents_lemmas=[],
+                post_doc_lemmas=[],
+                post_sent_char_spans=[],
+                post_token_to_sent=[],
+                post_sents_kept_idx=[],
+            )
+        )
         prof_idx += 1
 
     return out_profiles
 
 
 def build_docs_from_preprocessed(
-    pre_docs: List[Union[PreprocessedDoc, PreprocessedProfile]]
+    pre_docs: List[Union[PreprocessedDoc, PreprocessedProfile]],
 ) -> Union[List[List[str]], List[List[List[str]]]]:
     """
     Backwards compatible:

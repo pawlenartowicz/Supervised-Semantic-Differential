@@ -3,11 +3,11 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 from itertools import combinations
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
-from gensim.models import KeyedVectors
+from typing import Any, Dict, List, Sequence, Tuple, Union
+from .embeddings import Embeddings
 
 from .core import _SSDBase
-from .utils import filtered_neighbors, load_embeddings
+from .utils import filtered_neighbors
 
 
 class SSDGroup(_SSDBase):
@@ -22,7 +22,7 @@ class SSDGroup(_SSDBase):
 
     Parameters
     ----------
-    kv : KeyedVectors or str
+    kv : Embeddings or str
         Pretrained embeddings (or path to load).
     docs : list
         Documents as token lists. Same format as SSD (flat or grouped/profile).
@@ -41,7 +41,7 @@ class SSDGroup(_SSDBase):
 
     def __init__(
         self,
-        kv: Union[KeyedVectors, str],
+        kv: Union[Embeddings, str],
         docs: List[Any],
         groups: Sequence,
         lexicon: Any,
@@ -56,15 +56,18 @@ class SSDGroup(_SSDBase):
         # --- Validate and align groups with docs ---
         groups_raw = np.asarray(groups, dtype=object)
         if len(groups_raw) != len(docs):
-            raise ValueError(
-                f"len(groups)={len(groups_raw)} != len(docs)={len(docs)}"
-            )
+            raise ValueError(f"len(groups)={len(groups_raw)} != len(docs)={len(docs)}")
 
         # Drop docs where group label is missing (None, NaN, empty string)
-        group_valid = np.array([
-            g is not None and g != "" and (not isinstance(g, float) or np.isfinite(g))
-            for g in groups_raw
-        ], dtype=bool)
+        group_valid = np.array(
+            [
+                g is not None
+                and g != ""
+                and (not isinstance(g, float) or np.isfinite(g))
+                for g in groups_raw
+            ],
+            dtype=bool,
+        )
 
         if not group_valid.all():
             docs = [d for d, v in zip(docs, group_valid) if v]
@@ -75,9 +78,13 @@ class SSDGroup(_SSDBase):
         # doc-vector space), but _build_pcvs expects it for the shared
         # StandardScaler + PCA step.  Keep a small default internally.
         self._build_pcvs(
-            kv, docs, lexicon,
+            kv,
+            docs,
+            lexicon,
             l2_normalize_docs=l2_normalize_docs,
-            N_PCA=20, window=window, sif_a=sif_a,
+            N_PCA=20,
+            window=window,
+            sif_a=sif_a,
             use_full_doc=use_full_doc,
         )
 
@@ -108,7 +115,9 @@ class SSDGroup(_SSDBase):
             self.omnibus_p = only["p_raw"]
             self.omnibus_null = only["null_dist"]
         else:
-            self.omnibus_T, self.omnibus_p, self.omnibus_null = self._omnibus_permutation_test()
+            self.omnibus_T, self.omnibus_p, self.omnibus_null = (
+                self._omnibus_permutation_test()
+            )
             self.pairwise = self._pairwise_tests()
 
     # ----------------------------------------------------------------
@@ -140,15 +149,10 @@ class SSDGroup(_SSDBase):
         pairs = list(combinations(self.group_labels, 2))
         if not pairs:
             return 0.0
-        total = sum(
-            self._cosine_distance(centroids[a], centroids[b])
-            for a, b in pairs
-        )
+        total = sum(self._cosine_distance(centroids[a], centroids[b]) for a, b in pairs)
         return total / len(pairs)
 
-    def _compute_pairwise_T(
-        self, X: np.ndarray, groups: np.ndarray, g1, g2
-    ) -> float:
+    def _compute_pairwise_T(self, X: np.ndarray, groups: np.ndarray, g1, g2) -> float:
         """Cosine distance between two specific group centroids."""
         mask = (groups == g1) | (groups == g2)
         X_sub = X[mask]
@@ -225,13 +229,13 @@ class SSDGroup(_SSDBase):
             proj_g1 = proj[self.groups_kept == g1]
             proj_g2 = proj[self.groups_kept == g2]
             pooled_std = np.sqrt(
-                ((len(proj_g1)-1)*np.var(proj_g1, ddof=1) +
-                 (len(proj_g2)-1)*np.var(proj_g2, ddof=1))
+                (
+                    (len(proj_g1) - 1) * np.var(proj_g1, ddof=1)
+                    + (len(proj_g2) - 1) * np.var(proj_g2, ddof=1)
+                )
                 / (len(proj_g1) + len(proj_g2) - 2)
             )
-            cohens_d = (
-                (np.mean(proj_g1) - np.mean(proj_g2)) / max(pooled_std, 1e-12)
-            )
+            cohens_d = (np.mean(proj_g1) - np.mean(proj_g2)) / max(pooled_std, 1e-12)
 
             results[(g1, g2)] = {
                 "T": T_obs,
@@ -253,8 +257,10 @@ class SSDGroup(_SSDBase):
     # ----------------------------------------------------------------
     def print_results(self) -> None:
         """Pretty-print omnibus and pairwise results."""
-        print(f"SSDGroup: {self.G} groups, {self.n_kept} participants "
-              f"(dropped {self.n_dropped})")
+        print(
+            f"SSDGroup: {self.G} groups, {self.n_kept} participants "
+            f"(dropped {self.n_dropped})"
+        )
         print(f"Groups: {', '.join(str(g) for g in self.group_labels)}")
         for g in self.group_labels:
             n_g = int(np.sum(self.groups_kept == g))
@@ -262,12 +268,11 @@ class SSDGroup(_SSDBase):
         print(f"\nOmnibus permutation test ({self.n_perm} permutations):")
         print(f"  T = {self.omnibus_T:.6f}")
         print(f"  p = {self.omnibus_p:.4f}")
-        print(f"\nPairwise contrasts:")
+        print("\nPairwise contrasts:")
         for (g1, g2), r in self.pairwise.items():
             print(f"\n  {g1} vs {g2}:")
             print(f"    cosine distance = {r['T']:.6f}")
-            print(f"    p_raw = {r['p_raw']:.4f}, "
-                  f"p_corrected = {r['p_corrected']:.4f}")
+            print(f"    p_raw = {r['p_raw']:.4f}, p_corrected = {r['p_corrected']:.4f}")
             print(f"    Cohen's d = {r['cohens_d']:.3f}")
             print(f"    ||contrast|| = {r['contrast_norm']:.4f}")
 
@@ -275,17 +280,19 @@ class SSDGroup(_SSDBase):
         """Return pairwise results as a DataFrame."""
         rows = []
         for (g1, g2), r in self.pairwise.items():
-            rows.append({
-                "group_A": g1,
-                "group_B": g2,
-                "n_A": r["n_g1"],
-                "n_B": r["n_g2"],
-                "cosine_distance": r["T"],
-                "p_raw": r["p_raw"],
-                "p_corrected": r["p_corrected"],
-                "cohens_d": r["cohens_d"],
-                "contrast_norm": r["contrast_norm"],
-            })
+            rows.append(
+                {
+                    "group_A": g1,
+                    "group_B": g2,
+                    "n_A": r["n_g1"],
+                    "n_B": r["n_g2"],
+                    "cosine_distance": r["T"],
+                    "p_raw": r["p_raw"],
+                    "p_corrected": r["p_corrected"],
+                    "cohens_d": r["cohens_d"],
+                    "contrast_norm": r["contrast_norm"],
+                }
+            )
         return pd.DataFrame(rows)
 
     # ----------------------------------------------------------------
@@ -342,8 +349,8 @@ class SSDGroup(_SSDBase):
             sif_a=self.sif_a,
             docs_kept=self.docs_kept,
             perm_result=r,
-            pca=self.pca,
-            scaler_X=self.scaler_X,
+            pca_components=self._pca_components,
+            X_scale=self._X_scale,
         )
 
     # ----------------------------------------------------------------
@@ -389,7 +396,7 @@ class SSDContrast:
 
     def __init__(
         self,
-        kv: KeyedVectors,
+        kv: Embeddings,
         beta: np.ndarray,
         beta_unit: np.ndarray,
         use_unit_beta: bool,
@@ -404,15 +411,15 @@ class SSDContrast:
         sif_a: float,
         docs_kept: list,
         perm_result: dict,
-        pca,
-        scaler_X,
+        pca_components,
+        X_scale,
     ):
         self.kv = kv
         self.beta = beta
         self.beta_unit = beta_unit
         self.use_unit_beta = use_unit_beta
-        self.x = x               # all participants (for snippet scoring)
-        self.x_pair = x_pair     # only A+B participants
+        self.x = x  # all participants (for snippet scoring)
+        self.x_pair = x_pair  # only A+B participants
         self.groups_kept = groups_kept
         self.groups_pair = groups_pair
         self.group_a = group_a
@@ -422,8 +429,8 @@ class SSDContrast:
         self.sif_a = sif_a
         self.docs_kept = docs_kept
         self.perm_result = perm_result
-        self.pca = pca
-        self.scaler_X = scaler_X
+        self._pca_components = pca_components
+        self._X_scale = X_scale
 
         # Cluster storage (mirrors SSD)
         self.pos_clusters_raw = None
@@ -452,13 +459,15 @@ class SSDContrast:
         ]:
             pairs = filtered_neighbors(self.kv, vec, topn=n)
             for rank, (w, sim) in enumerate(pairs, start=1):
-                rows.append({
-                    "side": side_label,
-                    "group": group_label,
-                    "rank": rank,
-                    "word": w,
-                    "cos": float(sim),
-                })
+                rows.append(
+                    {
+                        "side": side_label,
+                        "group": group_label,
+                        "rank": rank,
+                        "word": w,
+                        "cos": float(sim),
+                    }
+                )
         df = pd.DataFrame(rows)
 
         if verbose:
@@ -490,9 +499,15 @@ class SSDContrast:
         from .clusters import cluster_top_neighbors
 
         clusters = cluster_top_neighbors(
-            self, topn=topn, k=k, k_min=k_min, k_max=k_max,
-            restrict_vocab=restrict_vocab, random_state=random_state,
-            min_cluster_size=min_cluster_size, side=side,
+            self,
+            topn=topn,
+            k=k,
+            k_min=k_min,
+            k_max=k_max,
+            restrict_vocab=restrict_vocab,
+            random_state=random_state,
+            min_cluster_size=min_cluster_size,
+            side=side,
         )
 
         if side == "pos":
@@ -505,54 +520,86 @@ class SSDContrast:
         for rank, C in enumerate(clusters, start=1):
             top = [w for (w, _cc, _cb) in C["words"][:top_words]]
             side_label = f"{self.group_a}" if side == "pos" else f"{self.group_b}"
-            rows_summary.append({
-                "side": side,
-                "group": side_label,
-                "cluster_rank": rank,
-                "size": C.get("size", len(C["words"])),
-                "centroid_cos_beta": C.get("centroid_cos_beta", float("nan")),
-                "coherence": C.get("coherence", float("nan")),
-                "top_words": ", ".join(top),
-            })
-            for (w, ccent, cbeta) in C["words"]:
-                rows_members.append({
+            rows_summary.append(
+                {
                     "side": side,
                     "group": side_label,
                     "cluster_rank": rank,
-                    "word": w,
-                    "cos_to_centroid": float(ccent),
-                    "cos_to_beta": float(cbeta),
-                })
+                    "size": C.get("size", len(C["words"])),
+                    "centroid_cos_beta": C.get("centroid_cos_beta", float("nan")),
+                    "coherence": C.get("coherence", float("nan")),
+                    "top_words": ", ".join(top),
+                }
+            )
+            for w, ccent, cbeta in C["words"]:
+                rows_members.append(
+                    {
+                        "side": side,
+                        "group": side_label,
+                        "cluster_rank": rank,
+                        "word": w,
+                        "cos_to_centroid": float(ccent),
+                        "cos_to_beta": float(cbeta),
+                    }
+                )
 
         df_clusters = pd.DataFrame(rows_summary)
         df_members = pd.DataFrame(rows_members)
 
         if verbose:
-            pole = f"more {self.group_a}-like" if side == "pos" else f"more {self.group_b}-like"
+            pole = (
+                f"more {self.group_a}-like"
+                if side == "pos"
+                else f"more {self.group_b}-like"
+            )
             print(f"\nThemes: {pole}")
             print("-" * 40)
             for _, row in df_clusters.iterrows():
                 print(f"\n  Cluster {int(row.cluster_rank)}")
-                print(f"    size={int(row['size'])}  cos_b={row.centroid_cos_beta:.3f}  "
-                      f"coherence={row.coherence:.3f}")
+                print(
+                    f"    size={int(row['size'])}  cos_b={row.centroid_cos_beta:.3f}  "
+                    f"coherence={row.coherence:.3f}"
+                )
                 print(f"    top: {row.top_words}")
 
         return df_clusters, df_members
 
-    def cluster_neighbors(self, *, topn=100, k=None, k_min=2, k_max=10,
-                           restrict_vocab=50000, random_state=13,
-                           min_cluster_size=2, top_words=10, verbose=False):
+    def cluster_neighbors(
+        self,
+        *,
+        topn=100,
+        k=None,
+        k_min=2,
+        k_max=10,
+        restrict_vocab=50000,
+        random_state=13,
+        min_cluster_size=2,
+        top_words=10,
+        verbose=False,
+    ):
         """Run clustering for both sides, return concatenated DFs."""
         df_pos_c, df_pos_m = self.cluster_neighbors_sign(
-            side="pos", topn=topn, k=k, k_min=k_min, k_max=k_max,
-            restrict_vocab=restrict_vocab, random_state=random_state,
-            min_cluster_size=min_cluster_size, top_words=top_words,
+            side="pos",
+            topn=topn,
+            k=k,
+            k_min=k_min,
+            k_max=k_max,
+            restrict_vocab=restrict_vocab,
+            random_state=random_state,
+            min_cluster_size=min_cluster_size,
+            top_words=top_words,
             verbose=verbose,
         )
         df_neg_c, df_neg_m = self.cluster_neighbors_sign(
-            side="neg", topn=topn, k=k, k_min=k_min, k_max=k_max,
-            restrict_vocab=restrict_vocab, random_state=random_state,
-            min_cluster_size=min_cluster_size, top_words=top_words,
+            side="neg",
+            topn=topn,
+            k=k,
+            k_min=k_min,
+            k_max=k_max,
+            restrict_vocab=restrict_vocab,
+            random_state=random_state,
+            min_cluster_size=min_cluster_size,
+            top_words=top_words,
             verbose=verbose,
         )
         return (
@@ -561,22 +608,27 @@ class SSDContrast:
         )
 
     # --- Snippets (mirrors SSD.beta_snippets) ---
-    def beta_snippets(self, *, pre_docs, seeds=None,
-                       top_per_side=200, min_cosine=None):
+    def beta_snippets(self, *, pre_docs, seeds=None, top_per_side=200, min_cosine=None):
         """Snippets along the contrast direction."""
         from .snippets import snippets_along_beta
+
         seeds = set(seeds or self.lexicon)
         return snippets_along_beta(
-            pre_docs=pre_docs, ssd=self,
-            token_window=self.window, seeds=seeds,
-            sif_a=self.sif_a, top_per_side=top_per_side,
+            pre_docs=pre_docs,
+            ssd=self,
+            token_window=self.window,
+            seeds=seeds,
+            sif_a=self.sif_a,
+            top_per_side=top_per_side,
             min_cosine=min_cosine,
         )
 
-    def cluster_snippets(self, *, pre_docs, side="both",
-                          seeds=None, top_per_cluster=100):
+    def cluster_snippets(
+        self, *, pre_docs, side="both", seeds=None, top_per_cluster=100
+    ):
         """Snippets per cluster centroid."""
         from .snippets import cluster_snippets_by_centroids
+
         need_pos = side in ("pos", "both")
         need_neg = side in ("neg", "both")
         pos_c = self.pos_clusters_raw if need_pos else []
@@ -587,10 +639,14 @@ class SSDContrast:
             raise RuntimeError("Run cluster_neighbors_sign(side='neg') first.")
         seeds = set(seeds or self.lexicon)
         return cluster_snippets_by_centroids(
-            pre_docs=pre_docs, ssd=self,
-            pos_clusters=pos_c, neg_clusters=neg_c,
-            token_window=self.window, seeds=seeds,
-            sif_a=self.sif_a, top_per_cluster=top_per_cluster,
+            pre_docs=pre_docs,
+            ssd=self,
+            pos_clusters=pos_c,
+            neg_clusters=neg_c,
+            token_window=self.window,
+            seeds=seeds,
+            sif_a=self.sif_a,
+            top_per_cluster=top_per_cluster,
         )
 
     @staticmethod

@@ -1,16 +1,21 @@
 # ssdiff/io_utils.py
 from __future__ import annotations
-import pickle, gzip, hashlib, time
+import pickle
+import gzip
+import hashlib
+import time
 from typing import Any, Dict, List, Optional, Union
 
 # import your classes so isinstance checks work
 from ssdiff.preprocess import PreprocessedDoc, PreprocessedProfile
 
+
 def _hash_list_str(xs: List[str]) -> str:
     h = hashlib.sha1()
     for x in xs:
-        h.update((x+'\n').encode('utf-8', 'ignore'))
+        h.update((x + "\n").encode("utf-8", "ignore"))
     return h.hexdigest()
+
 
 def save_preprocessed_bundle(
     pre_docs: List[Union[PreprocessedDoc, PreprocessedProfile]],
@@ -20,7 +25,7 @@ def save_preprocessed_bundle(
     spaCy_model: Optional[str] = None,
     stopwords: Optional[List[str]] = None,
     extra_meta: Optional[Dict[str, Any]] = None,
-    compress: str = "gzip"  # "gzip" only here, simple and everywhere available
+    compress: str = "gzip",  # "gzip" only here, simple and everywhere available
 ) -> str:
     """
     Save preprocessed objects + optional metadata in one compressed file.
@@ -58,6 +63,7 @@ def save_preprocessed_bundle(
 
     return path
 
+
 def load_preprocessed_bundle(path: str) -> Dict[str, Any]:
     """
     Load a bundle created by save_preprocessed_bundle.
@@ -76,7 +82,9 @@ def load_preprocessed_bundle(path: str) -> Dict[str, Any]:
 
     # Validate types (not strictly required but nice to catch mismatches)
     if kind == "profile" and not isinstance(pre_docs[0], PreprocessedProfile):
-        raise TypeError("Bundle says 'profile' but data items are not PreprocessedProfile")
+        raise TypeError(
+            "Bundle says 'profile' but data items are not PreprocessedProfile"
+        )
     if kind == "doc" and not isinstance(pre_docs[0], PreprocessedDoc):
         raise TypeError("Bundle says 'doc' but data items are not PreprocessedDoc")
 

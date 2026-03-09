@@ -2,25 +2,16 @@
 from __future__ import annotations
 import numpy as np
 from typing import Any, List, Union
-from gensim.models import KeyedVectors
-from sklearn.preprocessing import StandardScaler
-from sklearn.decomposition import PCA
+from .embeddings import Embeddings
+from ._math import standardize, pca_fit_transform, f_sf
 import pandas as pd
-
-try:
-    from scipy import stats as _scistats
-
-    _HAS_SCIPY = True
-except Exception:
-    _HAS_SCIPY = False
 
 from .utils import (
     compute_global_sif,
-    build_doc_vectors,
     filtered_neighbors,
     load_embeddings,
     _iter_token_lists,
-    build_doc_vectors_grouped
+    build_doc_vectors_grouped,
 )
 
 
@@ -55,7 +46,7 @@ class _SSDBase:
         self.pca_var_ratio, self.pca_var_ratio_cum,
         self.pca_var_explained, self.pca_n_components_
         """
-        self.kv = kv if isinstance(kv, KeyedVectors) else load_embeddings(kv)
+        self.kv = kv if isinstance(kv, Embeddings) else load_embeddings(kv)
         self.docs = docs
         self.lexicon = set(list(lexicon)) if lexicon is not None else set()
 
@@ -108,24 +99,16 @@ class _SSDBase:
         self.x = X
 
         # Standardize & PCA
-        self.scaler_X = StandardScaler()
-        self.Xs = self.scaler_X.fit_transform(self.x)
+        self.Xs, self._X_mean, self._X_scale = standardize(self.x)
         max_components = min(self.Xs.shape[0], self.Xs.shape[1])
         self.N_PCA = min(self.N_PCA, max_components)
-        self.pca = PCA(n_components=self.N_PCA, svd_solver="full")
-        self.z = self.pca.fit_transform(self.Xs)
-
-        evr = getattr(self.pca, "explained_variance_ratio_", None)
-        if evr is not None:
-            self.pca_var_ratio = np.asarray(evr, dtype=float)
-            self.pca_var_ratio_cum = np.cumsum(self.pca_var_ratio)
-            self.pca_var_explained = float(self.pca_var_ratio.sum())
-            self.pca_n_components_ = int(getattr(self.pca, "n_components_", len(self.pca_var_ratio)))
-        else:
-            self.pca_var_ratio = None
-            self.pca_var_ratio_cum = None
-            self.pca_var_explained = np.nan
-            self.pca_n_components_ = int(N_PCA)
+        self.z, self._pca_components, self.pca_var_ratio = pca_fit_transform(
+            self.Xs, n_components=self.N_PCA
+        )
+        self.pca_var_ratio = np.asarray(self.pca_var_ratio, dtype=float)
+        self.pca_var_ratio_cum = np.cumsum(self.pca_var_ratio)
+        self.pca_var_explained = float(self.pca_var_ratio.sum())
+        self.pca_n_components_ = self.N_PCA
 
     @staticmethod
     def _unit(v: np.ndarray, eps: float = 1e-12) -> np.ndarray:
@@ -166,18 +149,18 @@ class SSD(_SSDBase):
     """
 
     def __init__(
-            self,
-            kv: Union[KeyedVectors, str],
-            docs: List[Any],
-            y: np.ndarray,
-            lexicon: Any,
-            *,
-            l2_normalize_docs: bool = True,
-            use_unit_beta: bool = True,
-            N_PCA=20,
-            window: int = 3,
-            sif_a: float = 1e-3,
-            use_full_doc: bool = False,
+        self,
+        kv: Union[Embeddings, str],
+        docs: List[Any],
+        y: np.ndarray,
+        lexicon: Any,
+        *,
+        l2_normalize_docs: bool = True,
+        use_unit_beta: bool = True,
+        N_PCA=20,
+        window: int = 3,
+        sif_a: float = 1e-3,
+        use_full_doc: bool = False,
     ) -> None:
         # 1. Handle y and filter NaN rows from y AND docs BEFORE building PCVs
         self.y = np.asarray(y, dtype=float)
@@ -188,9 +171,13 @@ class SSD(_SSDBase):
 
         # 2. Shared PCV pipeline
         self._build_pcvs(
-            kv, docs, lexicon,
+            kv,
+            docs,
+            lexicon,
             l2_normalize_docs=l2_normalize_docs,
-            N_PCA=N_PCA, window=window, sif_a=sif_a,
+            N_PCA=N_PCA,
+            window=window,
+            sif_a=sif_a,
             use_full_doc=use_full_doc,
         )
 
@@ -198,8 +185,8 @@ class SSD(_SSDBase):
         self.y_kept = self.y[self.keep_mask]
 
         # 4. Standardize y
-        self.scaler_y = StandardScaler()
-        self.ys = self.scaler_y.fit_transform(self.y_kept.reshape(-1, 1)).ravel()
+        ys_2d, self._y_mean, self._y_scale = standardize(self.y_kept.reshape(-1, 1))
+        self.ys = ys_2d.ravel()
 
         # 5. Cluster placeholders
         self.pos_clusters_raw = None
@@ -225,19 +212,19 @@ class SSD(_SSDBase):
 
     def print_model_stats(self) -> None:
         """Pretty printer for model diagnostics."""
-        print(f"Kept {self.n_kept} / {self.n_raw} essays (dropped {self.n_dropped} with no seed occurrence).")
+        print(
+            f"Kept {self.n_kept} / {self.n_raw} essays (dropped {self.n_dropped} with no seed occurrence)."
+        )
         print("Model Statistics:")
         print(f"R² = {self.r2:.4f}")
         print(f"F-statistic = {self.f_stat:.4f}")
-        ptxt = f"{self.f_pvalue:.6f}" if np.isfinite(self.f_pvalue) else "n/a (SciPy missing)"
+        ptxt = f"{self.f_pvalue:.6f}" if np.isfinite(self.f_pvalue) else "n/a"
         print(f"F-test p-value = {ptxt}")
         print("\nCalibration:")
         print(f"‖β‖ (SD(y) per +1.0 cosine) = {self.beta_norm_stdCN:.4f}")
         print(f"Δy per +0.10 cosine         = {self.delta_per_0p10_raw:.4f}")
         print(f"IQR(cos) effect (raw y)     = {self.iqr_effect_raw:.4f}")
         print(f"Corr(y, Xβ)                 = {self.y_corr_pred:.4f}")
-
-    import pandas as pd
 
     def top_words(self, n: int = 10, *, verbose: bool = False) -> pd.DataFrame:
         """
@@ -254,12 +241,14 @@ class SSD(_SSDBase):
         for side, vec in (("pos", b), ("neg", -b)):
             pairs = filtered_neighbors(self.kv, vec, topn=n)
             for rank, (w, sim) in enumerate(pairs, start=1):
-                rows.append({
-                    "side": side,
-                    "rank": rank,
-                    "word": w,
-                    "cos": float(sim),
-                })
+                rows.append(
+                    {
+                        "side": side,
+                        "rank": rank,
+                        "word": w,
+                        "cos": float(sim),
+                    }
+                )
 
         df = pd.DataFrame(rows, columns=["side", "rank", "word", "cos"])
 
@@ -288,7 +277,7 @@ class SSD(_SSDBase):
         resid = ys - y_pred
         n = len(ys)
         p = len(w_reg)
-        ss_res = float(np.sum(resid ** 2))
+        ss_res = float(np.sum(resid**2))
         ss_tot = float(np.sum((ys - np.mean(ys)) ** 2))
         self.r2 = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0.0
 
@@ -300,13 +289,13 @@ class SSD(_SSDBase):
         msr = (ss_tot - ss_res) / max(p, 1)
         mse = ss_res / (n - p - 1) if (n - p - 1) > 0 else np.inf
         self.f_stat = msr / mse if np.isfinite(mse) and mse > 0 else 0.0
-        if _HAS_SCIPY and np.isfinite(mse):
-            self.f_pvalue = 1 - _scistats.f.cdf(self.f_stat, p, n - p - 1)
+        if np.isfinite(mse) and (n - p - 1) > 0:
+            self.f_pvalue = f_sf(self.f_stat, p, n - p - 1)
         else:
             self.f_pvalue = np.nan
 
-        beta_std = self.pca.components_.T.dot(w_reg)
-        scale = np.where(self.scaler_X.scale_ > 0, self.scaler_X.scale_, 1.0)
+        beta_std = self._pca_components.T.dot(w_reg)
+        scale = np.where(self._X_scale > 0, self._X_scale, 1.0)
         beta_docspace = beta_std / scale
 
         return beta_docspace
@@ -328,14 +317,16 @@ class SSD(_SSDBase):
             corr = -corr  # now non-negative
 
         # Update the unit vector after any potential flip
-        self.beta_unit = self._unit(self.beta) if getattr(self, "use_unit_beta", True) else self.beta
+        self.beta_unit = (
+            self._unit(self.beta) if getattr(self, "use_unit_beta", True) else self.beta
+        )
 
         # --- Strength of beta in standardized CN units ---
         self.beta_norm_stdCN = float(np.linalg.norm(self.beta))
 
         # Outcome scaler (raw CN units)
-        self.y_mean = float(getattr(self.scaler_y, "mean_", np.array([0.0]))[0])
-        self.y_std = float(getattr(self.scaler_y, "scale_", np.array([1.0]))[0])
+        self.y_mean = float(self._y_mean[0])
+        self.y_std = float(self._y_scale[0])
 
         # Cosine alignment for each doc against unit beta
         bu = self._unit(self.beta)
@@ -384,18 +375,18 @@ class SSD(_SSDBase):
         )
 
     def cluster_neighbors_sign(
-            self,
-            *,
-            side: str = "pos",
-            topn: int = 100,
-            k: int | None = None,
-            k_min: int = 2,
-            k_max: int = 10,
-            restrict_vocab: int = 50000,
-            random_state: int = 13,
-            min_cluster_size: int = 2,
-            top_words: int = 10,
-            verbose: bool = False,
+        self,
+        *,
+        side: str = "pos",
+        topn: int = 100,
+        k: int | None = None,
+        k_min: int = 2,
+        k_max: int = 10,
+        restrict_vocab: int = 50000,
+        random_state: int = 13,
+        min_cluster_size: int = 2,
+        top_words: int = 10,
+        verbose: bool = False,
     ):
         """
         Cluster top neighbors around +β̂ or −β̂.
@@ -428,30 +419,43 @@ class SSD(_SSDBase):
         for rank, C in enumerate(clusters, start=1):
             # summary row
             top = [w for (w, _ccent, _cbeta) in C["words"][:top_words]]
-            rows_summary.append({
-                "side": side,
-                "cluster_rank": rank,  # key
-                "size": C.get("size", len(C["words"])),
-                "centroid_cos_beta": C.get("centroid_cos_beta", float("nan")),
-                "coherence": C.get("coherence", float("nan")),
-                "top_words": ", ".join(top),
-            })
-            # members
-            for (w, ccent, cbeta) in C["words"]:
-                rows_members.append({
+            rows_summary.append(
+                {
                     "side": side,
                     "cluster_rank": rank,  # key
-                    "word": w,
-                    "cos_to_centroid": float(ccent),
-                    "cos_to_beta": float(cbeta),
-                })
+                    "size": C.get("size", len(C["words"])),
+                    "centroid_cos_beta": C.get("centroid_cos_beta", float("nan")),
+                    "coherence": C.get("coherence", float("nan")),
+                    "top_words": ", ".join(top),
+                }
+            )
+            # members
+            for w, ccent, cbeta in C["words"]:
+                rows_members.append(
+                    {
+                        "side": side,
+                        "cluster_rank": rank,  # key
+                        "word": w,
+                        "cos_to_centroid": float(ccent),
+                        "cos_to_beta": float(cbeta),
+                    }
+                )
 
-        df_clusters = pd.DataFrame(rows_summary, columns=[
-            "side", "cluster_rank", "size", "centroid_cos_beta", "coherence", "top_words"
-        ])
-        df_members = pd.DataFrame(rows_members, columns=[
-            "side", "cluster_rank", "word", "cos_to_centroid", "cos_to_beta"
-        ])
+        df_clusters = pd.DataFrame(
+            rows_summary,
+            columns=[
+                "side",
+                "cluster_rank",
+                "size",
+                "centroid_cos_beta",
+                "coherence",
+                "top_words",
+            ],
+        )
+        df_members = pd.DataFrame(
+            rows_members,
+            columns=["side", "cluster_rank", "word", "cos_to_centroid", "cos_to_beta"],
+        )
 
         if verbose:
             pole = "+β̂" if side == "pos" else "−β̂"
@@ -459,23 +463,25 @@ class SSD(_SSDBase):
             print(f"\n{title}\n" + "-" * len(title))
             for _, row in df_clusters.sort_values("cluster_rank").iterrows():
                 print(f"\nCluster {int(row.cluster_rank)}")
-                print(f"  size={int(row.size)}  centroid·β̂={row.centroid_cos_beta:.3f}  coherence={row.coherence:.3f}")
+                print(
+                    f"  size={int(row.size)}  centroid·β̂={row.centroid_cos_beta:.3f}  coherence={row.coherence:.3f}"
+                )
                 print(f"  top: {row.top_words}")
 
         return df_clusters, df_members
 
     def cluster_neighbors(
-            self,
-            *,
-            topn: int = 100,
-            k: int | None = None,
-            k_min: int = 2,
-            k_max: int = 10,
-            restrict_vocab: int = 50000,
-            random_state: int = 13,
-            min_cluster_size: int = 2,
-            top_words: int = 10,
-            verbose: bool = False,
+        self,
+        *,
+        topn: int = 100,
+        k: int | None = None,
+        k_min: int = 2,
+        k_max: int = 10,
+        restrict_vocab: int = 50000,
+        random_state: int = 13,
+        min_cluster_size: int = 2,
+        top_words: int = 10,
+        verbose: bool = False,
     ):
         """
         Convenience: run clustering for both +β̂ and −β̂ and return concatenated DFs.
@@ -485,7 +491,10 @@ class SSD(_SSDBase):
 
         df_pos_clusters, df_pos_members = self.cluster_neighbors_sign(
             side="pos",
-            topn=topn, k=k, k_min=k_min, k_max=k_max,
+            topn=topn,
+            k=k,
+            k_min=k_min,
+            k_max=k_max,
             restrict_vocab=restrict_vocab,
             random_state=random_state,
             min_cluster_size=min_cluster_size,
@@ -494,7 +503,10 @@ class SSD(_SSDBase):
         )
         df_neg_clusters, df_neg_members = self.cluster_neighbors_sign(
             side="neg",
-            topn=topn, k=k, k_min=k_min, k_max=k_max,
+            topn=topn,
+            k=k,
+            k_min=k_min,
+            k_max=k_max,
             restrict_vocab=restrict_vocab,
             random_state=random_state,
             min_cluster_size=min_cluster_size,
@@ -507,12 +519,12 @@ class SSD(_SSDBase):
         return df_clusters, df_members
 
     def cluster_snippets(
-            self,
-            *,
-            pre_docs,
-            side: str = "both",  # "pos", "neg", or "both"
-            seeds=None,  # defaults to self.lexicon
-            top_per_cluster: int = 100,
+        self,
+        *,
+        pre_docs,
+        side: str = "both",  # "pos", "neg", or "both"
+        seeds=None,  # defaults to self.lexicon
+        top_per_cluster: int = 100,
     ) -> dict:
         """
         Collect text snippets (surface sentences) most aligned with each cluster centroid.
@@ -530,11 +542,15 @@ class SSD(_SSDBase):
         need_pos = side in ("pos", "both")
         need_neg = side in ("neg", "both")
 
-        if need_pos and (self.pos_clusters_raw is None or len(self.pos_clusters_raw) == 0):
+        if need_pos and (
+            self.pos_clusters_raw is None or len(self.pos_clusters_raw) == 0
+        ):
             raise RuntimeError(
                 "Positive-side clusters not available. Run `cluster_neighbors_sign(side='pos')` first."
             )
-        if need_neg and (self.neg_clusters_raw is None or len(self.neg_clusters_raw) == 0):
+        if need_neg and (
+            self.neg_clusters_raw is None or len(self.neg_clusters_raw) == 0
+        ):
             raise RuntimeError(
                 "Negative-side clusters not available. Run `cluster_neighbors_sign(side='neg')` first."
             )
@@ -557,13 +573,13 @@ class SSD(_SSDBase):
         )
 
     def beta_snippets(
-            self,
-            *,
-            pre_docs,
-            window_sentences: int = 1,
-            seeds=None,
-            top_per_side: int = 200,
-            min_cosine: float | None = None,
+        self,
+        *,
+        pre_docs,
+        window_sentences: int = 1,
+        seeds=None,
+        top_per_side: int = 200,
+        min_cosine: float | None = None,
     ) -> dict:
         """
         Collect text snippets most aligned with the β̂ direction itself (not cluster centroids).
@@ -585,10 +601,10 @@ class SSD(_SSDBase):
         )
 
     def ssd_scores(
-            self,
-            include_all: bool = True,
-            return_df: bool = True,
-            include_true: bool = True,
+        self,
+        include_all: bool = True,
+        return_df: bool = True,
+        include_true: bool = True,
     ):
         """
         Compute per-document SSD scores from the fitted model.
@@ -624,18 +640,27 @@ class SSD(_SSDBase):
              yhat_raw = y_mean + y_std * yhat_std
         """
         import numpy as np
+
         try:
             import pandas as pd
         except Exception:
             pd = None  # allow non-DataFrame return if pandas not available
 
-        if not hasattr(self, "x") or not hasattr(self, "beta") or not hasattr(self, "keep_mask"):
-            raise RuntimeError("Model appears unfitted: missing x/beta/keep_mask. Fit before calling ssd_scores().")
+        if (
+            not hasattr(self, "x")
+            or not hasattr(self, "beta")
+            or not hasattr(self, "keep_mask")
+        ):
+            raise RuntimeError(
+                "Model appears unfitted: missing x/beta/keep_mask. Fit before calling ssd_scores()."
+            )
 
         n_raw = getattr(self, "n_raw", len(self.docs))
         keep = self.keep_mask
         if keep is None or len(keep) != n_raw:
-            raise RuntimeError("Invalid or missing keep_mask; cannot map scores back to original doc indices.")
+            raise RuntimeError(
+                "Invalid or missing keep_mask; cannot map scores back to original doc indices."
+            )
 
         # Per-kept-doc projections in standardized y-units
         # yhat_std_k: X_k @ β  (vector length = n_kept)
@@ -645,10 +670,8 @@ class SSD(_SSDBase):
         cos_k = np.array(self.cos_align, dtype=float)
 
         # Raw-scale mapping via fitted scaler on y
-        y_mean = float(
-            getattr(self, "y_mean", getattr(self, "scaler_y", None).mean_[0] if hasattr(self, "scaler_y") else 0.0))
-        y_std = float(
-            getattr(self, "y_std", getattr(self, "scaler_y", None).scale_[0] if hasattr(self, "scaler_y") else 1.0))
+        y_mean = float(getattr(self, "y_mean", 0.0))
+        y_std = float(getattr(self, "y_std", 1.0))
         if y_std == 0.0:
             y_std = 1.0
         yhat_raw_k = y_mean + y_std * yhat_std_k
@@ -687,20 +710,20 @@ class SSD(_SSDBase):
         if return_df:
             if pd is None:
                 raise RuntimeError(
-                    "pandas is required to return a DataFrame. Call with return_df=False or install pandas.")
+                    "pandas is required to return a DataFrame. Call with return_df=False or install pandas."
+                )
             cols = ["doc_index", "kept", "cos", "yhat_std", "yhat_raw"]
             if include_true:
                 cols += ["y_true_std", "y_true_raw"]
             return pd.DataFrame({c: result[c] for c in cols})
         return result
 
-
     def select_extreme_docs(
-            self,
-            *,
-            k: int = 200,
-            by: str = "y",  # one of {"y","yhat","cos"}
-            include_dropped: bool = True,
+        self,
+        *,
+        k: int = 200,
+        by: str = "y",  # one of {"y","yhat","cos"}
+        include_dropped: bool = True,
     ) -> np.ndarray:
         """
         Return original doc indices for the bottom-k and top-k by the chosen signal.
@@ -764,8 +787,8 @@ class SSD(_SSDBase):
 
     @staticmethod
     def subset_pre_docs_by_idx(
-            pre_docs,
-            idx_keep: set[int],
+        pre_docs,
+        idx_keep: set[int],
     ):
         """
         Filter `pre_docs` to a subset corresponding to original doc indices in `idx_keep`.
@@ -778,7 +801,10 @@ class SSD(_SSDBase):
         if not pre_docs:
             return [], []
 
-        from .preprocess import PreprocessedDoc, PreprocessedProfile  # local import to avoid cycles
+        from .preprocess import (
+            PreprocessedDoc,
+            PreprocessedProfile,
+        )  # local import to avoid cycles
 
         kept = []
         kept_idx = []
@@ -804,18 +830,18 @@ class SSD(_SSDBase):
         return kept, kept_idx
 
     def beta_snippets_extremes(
-            self,
-            *,
-            pre_docs,
-            k: int = 200,
-            by: str = "y",  # {"y","yhat","cos"}
-            token_window: int | None = None,
-            seeds=None,
-            sif_a: float | None = None,
-            top_per_side: int = 200,
-            min_cosine: float | None = None,
-            n_jobs: int = -1,
-            progress: bool = False,
+        self,
+        *,
+        pre_docs,
+        k: int = 200,
+        by: str = "y",  # {"y","yhat","cos"}
+        token_window: int | None = None,
+        seeds=None,
+        sif_a: float | None = None,
+        top_per_side: int = 200,
+        min_cosine: float | None = None,
+        n_jobs: int = -1,
+        progress: bool = False,
     ):
         """
         Wrapper: take bottom-k and top-k docs by `by` signal, subset pre_docs,
@@ -844,17 +870,17 @@ class SSD(_SSDBase):
         )
 
     def cluster_snippets_extremes(
-            self,
-            *,
-            pre_docs,
-            k: int = 200,
-            by: str = "y",  # {"y","yhat","cos"}
-            token_window: int | None = None,
-            seeds=None,
-            top_per_cluster: int = 100,
-            n_jobs: int = -1,
-            progress: bool = False,
-            side: str = "both",  # "pos","neg","both"  (must have run cluster_neighbors_sign beforehand)
+        self,
+        *,
+        pre_docs,
+        k: int = 200,
+        by: str = "y",  # {"y","yhat","cos"}
+        token_window: int | None = None,
+        seeds=None,
+        top_per_cluster: int = 100,
+        n_jobs: int = -1,
+        progress: bool = False,
+        side: str = "both",  # "pos","neg","both"  (must have run cluster_neighbors_sign beforehand)
     ):
         """
         Wrapper: take bottom-k and top-k docs by `by` signal, subset pre_docs,
@@ -868,9 +894,13 @@ class SSD(_SSDBase):
         pos_clusters = self.pos_clusters_raw if need_pos else []
         neg_clusters = self.neg_clusters_raw if need_neg else []
         if need_pos and not pos_clusters:
-            raise RuntimeError("pos-side clusters missing. Run cluster_neighbors_sign(side='pos') first.")
+            raise RuntimeError(
+                "pos-side clusters missing. Run cluster_neighbors_sign(side='pos') first."
+            )
         if need_neg and not neg_clusters:
-            raise RuntimeError("neg-side clusters missing. Run cluster_neighbors_sign(side='neg') first.")
+            raise RuntimeError(
+                "neg-side clusters missing. Run cluster_neighbors_sign(side='neg') first."
+            )
 
         idx = self.select_extreme_docs(k=k, by=by, include_dropped=True)
         if idx.size == 0:

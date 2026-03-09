@@ -1,37 +1,38 @@
 # ssdiff/utils.py
 import numpy as np
-from gensim.models import KeyedVectors
-from typing import List, Tuple, Dict, Union
+from .embeddings import Embeddings, load_embeddings as _load_embeddings
+from typing import Iterable, List, Tuple, Dict, Union
 import re
-import os
-import gzip
 
 _bad_token = re.compile(r".*\d|^[A-ZĄĆĘŁŃÓŚŹŻ]")
 
 
 def normalize_kv(
-    kv: KeyedVectors,
+    kv: Embeddings,
     *,
     l2: bool = True,
     abtt_m: int = 0,
     re_normalize: bool = True,
-) -> KeyedVectors:
+) -> Embeddings:
     """
-    Return a NEW KeyedVectors with optional:
+    Return a NEW Embeddings with optional:
       1) L2 normalization of rows
       2) ABTT: center & remove top-m PCs
       3) re-normalize rows (recommended)
     """
     keys = list(kv.index_to_key)
-    V = kv.get_normed_vectors().astype(np.float64) if l2 else kv.vectors.astype(np.float64)
+    V = (
+        kv.get_normed_vectors().astype(np.float64)
+        if l2
+        else kv.vectors.astype(np.float64)
+    )
 
     if abtt_m > 0:
         mu = V.mean(axis=0)
         Vc = V - mu
-        # SVD on feature space
         U, S, Vt = np.linalg.svd(Vc, full_matrices=False)
         m = min(abtt_m, Vt.shape[0])
-        top = Vt[:m, :]                 # (m, d)
+        top = Vt[:m, :]
         P = np.eye(Vt.shape[1]) - top.T @ top
         V = Vc @ P
 
@@ -40,10 +41,11 @@ def normalize_kv(
         norms = np.maximum(norms, 1e-12)
         V = V / norms
 
-    kv_t = KeyedVectors(vector_size=V.shape[1])
+    kv_t = Embeddings.empty(V.shape[1])
     kv_t.add_vectors(keys, V.astype(np.float32))
     kv_t.fill_norms()
     return kv_t
+
 
 def compute_global_sif(sentences: List[List[str]]) -> Tuple[Dict[str, int], int]:
     wc: Dict[str, int] = {}
@@ -53,9 +55,7 @@ def compute_global_sif(sentences: List[List[str]]) -> Tuple[Dict[str, int], int]
     return wc, sum(wc.values())
 
 
-def build_doc_vectors(
-    docs, kv, lexicon, global_wc, total_tokens, window, sif_a
-):
+def build_doc_vectors(docs, kv, lexicon, global_wc, total_tokens, window, sif_a):
     X_list = []
     keep_mask = []
     for doc in docs:
@@ -69,9 +69,7 @@ def build_doc_vectors(
     return X, np.array(keep_mask, dtype=bool)
 
 
-def _doc_vector(
-    doc, kv, lexicon, wc, tot, window, sif_a
-) -> np.ndarray | None:
+def _doc_vector(doc, kv, lexicon, wc, tot, window, sif_a) -> np.ndarray | None:
     occ = []
     D = kv.vector_size
     for i, token in enumerate(doc):
@@ -98,13 +96,10 @@ def _doc_vector(
     return np.mean(occ, axis=0).astype(np.float64)
 
 
+def load_embeddings(path: str) -> Embeddings:
+    """Load embeddings from file. Delegates to ssdiff.embeddings.load_embeddings."""
+    return _load_embeddings(path)
 
-def _first_line_tokens(path: str) -> list[str]:
-    opener = gzip.open if path.lower().endswith(".gz") else open
-    with opener(path, "rt", encoding="utf-8", errors="ignore") as f:
-        return f.readline().strip().split()
-
-from typing import Iterable
 
 def _iter_token_lists(docs: list) -> Iterable[list[str]]:
     """
@@ -124,6 +119,7 @@ def _iter_token_lists(docs: list) -> Iterable[list[str]]:
             for sub in item:
                 if sub:
                     yield sub
+
 
 def _occ_vectors_in_doc(doc, kv, lexicon, wc, tot, window, sif_a):
     """
@@ -151,6 +147,7 @@ def _occ_vectors_in_doc(doc, kv, lexicon, wc, tot, window, sif_a):
             occ.append(sum_v / w_sum)
     return occ
 
+
 def build_doc_vectors_grouped(
     docs,
     kv,
@@ -160,7 +157,7 @@ def build_doc_vectors_grouped(
     window,
     sif_a,
     *,
-    mode: str = "seed",   # NEW: "seed" (default) or "full"
+    mode: str = "seed",  # NEW: "seed" (default) or "full"
 ):
     """
     docs can be:
@@ -174,7 +171,7 @@ def build_doc_vectors_grouped(
     if mode not in {"seed", "full"}:
         raise ValueError("mode must be 'seed' or 'full'.")
 
-    use_seeds = (mode == "seed")
+    use_seeds = mode == "seed"
 
     X_list = []
     keep_mask = []
@@ -186,7 +183,9 @@ def build_doc_vectors_grouped(
             mode_docs = "flat" if isinstance(it[0], str) else "grouped"
             break
     if mode_docs is None:
-        return np.zeros((0, kv.vector_size), dtype=np.float64), np.zeros((0,), dtype=bool)
+        return np.zeros((0, kv.vector_size), dtype=np.float64), np.zeros(
+            (0,), dtype=bool
+        )
 
     # --- FLAT DOCS: List[List[str]] ---
     if mode_docs == "flat":
@@ -197,7 +196,9 @@ def build_doc_vectors_grouped(
 
             if use_seeds:
                 # existing behavior via per-occurrence contexts
-                occ = _occ_vectors_in_doc(d, kv, lexicon, global_wc, total_tokens, window, sif_a)
+                occ = _occ_vectors_in_doc(
+                    d, kv, lexicon, global_wc, total_tokens, window, sif_a
+                )
                 if not occ:
                     keep_mask.append(False)
                 else:
@@ -225,7 +226,9 @@ def build_doc_vectors_grouped(
                     if not p:
                         continue
                     occ_all.extend(
-                        _occ_vectors_in_doc(p, kv, lexicon, global_wc, total_tokens, window, sif_a)
+                        _occ_vectors_in_doc(
+                            p, kv, lexicon, global_wc, total_tokens, window, sif_a
+                        )
                     )
                 if not occ_all:
                     keep_mask.append(False)
@@ -246,9 +249,7 @@ def build_doc_vectors_grouped(
     return X, np.array(keep_mask, dtype=bool)
 
 
-def _full_doc_vector(
-    tokens, kv, wc, tot, sif_a
-) -> np.ndarray | None:
+def _full_doc_vector(tokens, kv, wc, tot, sif_a) -> np.ndarray | None:
     """
     SIF-weighted mean of *all* tokens in a doc.
 
@@ -273,44 +274,8 @@ def _full_doc_vector(
     return (sum_v / w_sum).astype(np.float64)
 
 
-def load_embeddings(path: str) -> KeyedVectors:
-    """
-    Load a pre-trained static embedding model from the given path.
-    Supports:
-      - .kv (Gensim KeyedVectors)
-      - .bin (word2vec binary)
-      - .txt/.vec (word2vec text; auto-detects header; works with many fastText/GloVe-style dumps)
-      - optional .gz compression on the above
-    """
-    low = path.lower()
-    ext = os.path.splitext(low)[1]
-
-    # Gensim native format
-    if ext == ".kv" or low.endswith(".kv.gz"):
-        return KeyedVectors.load(path, mmap="r")
-
-    # word2vec binary
-    if ext == ".bin" or low.endswith(".bin.gz"):
-        return KeyedVectors.load_word2vec_format(
-            path, binary=True, unicode_errors="ignore"
-        )
-
-    # word2vec text / fastText .vec / GloVe-like (auto header detection)
-    if ext in {".txt", ".vec"} or low.endswith(".txt.gz") or low.endswith(".vec.gz"):
-        toks = _first_line_tokens(path)
-        has_header = (len(toks) == 2 and toks[0].isdigit() and toks[1].isdigit())
-        return KeyedVectors.load_word2vec_format(
-            path,
-            binary=False,
-            unicode_errors="ignore",
-            no_header=not has_header
-        )
-
-    # Fallback: try Gensim loader (covers rare cases)
-    return KeyedVectors.load(path, mmap="r")
-
 def filtered_neighbors(
-    kv: KeyedVectors,
+    kv: Embeddings,
     vec: Union[List[float], np.ndarray],
     topn: int = 20,
     cand: int = 2000,

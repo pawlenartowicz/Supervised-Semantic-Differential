@@ -14,11 +14,13 @@ __all__ = [
 # Helpers: inputs & metrics
 # -------------------------
 
+
 def _as_series_1d(y: Iterable) -> pd.Series:
     """Standardize y to a 1D float Series (no index semantics)."""
     if isinstance(y, pd.Series):
         return pd.to_numeric(y, errors="coerce")
     return pd.to_numeric(pd.Series(list(y)), errors="coerce")
+
 
 def _texts_to_token_lists(texts: Sequence) -> list[list[str]]:
     """
@@ -37,9 +39,11 @@ def _texts_to_token_lists(texts: Sequence) -> list[list[str]]:
     # assume space-separated strings
     return [str(t).split() for t in texts]
 
+
 def _token_sets(texts: Sequence) -> list[set[str]]:
     """Token lists → per-doc sets (unique presence)."""
     return [set(toks) for toks in _texts_to_token_lists(texts)]
+
 
 def _quantile_bins(y: pd.Series | np.ndarray, n_bins: int = 4) -> np.ndarray:
     """
@@ -54,6 +58,7 @@ def _quantile_bins(y: pd.Series | np.ndarray, n_bins: int = 4) -> np.ndarray:
         med = float(np.nanmedian(ys.to_numpy()))
         return (ys.to_numpy() > med).astype(int)
 
+
 def _z(v: pd.Series | np.ndarray) -> np.ndarray:
     """Z-score to float np.ndarray with ddof=0; protects zero variance."""
     arr = _as_series_1d(v).to_numpy(dtype=float)
@@ -63,19 +68,25 @@ def _z(v: pd.Series | np.ndarray) -> np.ndarray:
     mu = float(np.nanmean(arr))
     return (arr - mu) / sd
 
+
 def _validate_var_type(var_type: str) -> None:
     if var_type not in ("continuous", "categorical"):
         raise ValueError(
             f"var_type must be 'continuous' or 'categorical', got {var_type!r}"
         )
 
+
 def _categorical_mask(y) -> np.ndarray:
     """Boolean mask: True for valid categorical entries (not None/NaN/empty)."""
     arr = np.asarray(y, dtype=object)
-    return np.array([
-        g is not None and g != "" and (not isinstance(g, float) or np.isfinite(g))
-        for g in arr
-    ], dtype=bool)
+    return np.array(
+        [
+            g is not None and g != "" and (not isinstance(g, float) or np.isfinite(g))
+            for g in arr
+        ],
+        dtype=bool,
+    )
+
 
 def _cramers_v(presence: np.ndarray, groups: np.ndarray) -> float:
     """Cramér's V between binary presence (0/1) and group labels."""
@@ -89,6 +100,7 @@ def _cramers_v(presence: np.ndarray, groups: np.ndarray) -> float:
     chi2 = float(((ct.values - expected) ** 2 / expected).sum())
     k = min(ct.shape) - 1
     return float(np.sqrt(chi2 / (n * k))) if n * k > 0 else 0.0
+
 
 def _rank_for_token_stats(
     presence_vec: np.ndarray,
@@ -124,15 +136,21 @@ def _rank_for_token_stats(
             cov_per_bin.append(float(np.mean(presence_vec[idx])) if len(idx) else 0.0)
         cov_bal = float(np.mean(cov_per_bin)) if cov_per_bin else 0.0
         y_std = _z(y)
-        corr = float(np.corrcoef(presence_vec, y_std)[0, 1]) if np.std(presence_vec) > 0 else 0.0
+        corr = (
+            float(np.corrcoef(presence_vec, y_std)[0, 1])
+            if np.std(presence_vec) > 0
+            else 0.0
+        )
 
     pen = min(1.0, abs(corr) / corr_cap)
     rank = cov_bal * (1.0 - pen)
     return cov_all, cov_bal, corr, rank
 
+
 # -------------------------
 # Public API
 # -------------------------
+
 
 def suggest_lexicon(
     df_or_texts,
@@ -210,27 +228,49 @@ def suggest_lexicon(
     # Build doc-frequency counts
     token_sets = _token_sets(texts)
     from collections import Counter
+
     df_counts = Counter()
     for ts in token_sets:
         df_counts.update(ts)
     vocab = [t for t, c in df_counts.items() if c >= min_docs]
     if not vocab:
-        return pd.DataFrame(columns=["token", "docs", "cov_all", "cov_bal", "corr", "rank"])
+        return pd.DataFrame(
+            columns=["token", "docs", "cov_all", "cov_bal", "corr", "rank"]
+        )
 
     rows = []
     y_clean = y if is_categorical else y.reset_index(drop=True)
     for t in vocab:
-        pres = np.fromiter((1 if t in ts else 0 for ts in token_sets), dtype=np.int8, count=len(token_sets))
-        cov_all, cov_bal, corr, rank = _rank_for_token_stats(
-            pres, y_clean, n_bins=n_bins, corr_cap=corr_cap, categorical=is_categorical,
+        pres = np.fromiter(
+            (1 if t in ts else 0 for ts in token_sets),
+            dtype=np.int8,
+            count=len(token_sets),
         )
-        rows.append(dict(token=t, docs=int(pres.sum()), cov_all=cov_all, cov_bal=cov_bal, corr=corr, rank=rank))
+        cov_all, cov_bal, corr, rank = _rank_for_token_stats(
+            pres,
+            y_clean,
+            n_bins=n_bins,
+            corr_cap=corr_cap,
+            categorical=is_categorical,
+        )
+        rows.append(
+            dict(
+                token=t,
+                docs=int(pres.sum()),
+                cov_all=cov_all,
+                cov_bal=cov_bal,
+                corr=corr,
+                rank=rank,
+            )
+        )
 
     out = pd.DataFrame(rows)
-    return (out
-            .sort_values(["rank", "cov_bal", "docs"], ascending=[False, False, False])
-            .head(top_k)
-            .reset_index(drop=True))
+    return (
+        out.sort_values(["rank", "cov_bal", "docs"], ascending=[False, False, False])
+        .head(top_k)
+        .reset_index(drop=True)
+    )
+
 
 def token_presence_stats(
     texts: Iterable[object],
@@ -295,15 +335,22 @@ def token_presence_stats(
             texts_list = [texts_list[i] for i in range(len(texts_list)) if mask[i]]
             y_arr = y_arr[mask]
         if len(texts_list) != len(y_arr):
-            raise ValueError(f"Length mismatch: texts={len(texts_list)} vs y={len(y_arr)}")
+            raise ValueError(
+                f"Length mismatch: texts={len(texts_list)} vs y={len(y_arr)}"
+            )
 
         pres = np.fromiter(
             (1 if token in _doc_token_set(doc) else 0 for doc in texts_list),
-            dtype=np.int8, count=len(texts_list),
+            dtype=np.int8,
+            count=len(texts_list),
         )
 
         cov_all, cov_bal, corr, rank = _rank_for_token_stats(
-            pres, y_arr, n_bins=n_bins, corr_cap=corr_cap, categorical=True,
+            pres,
+            y_arr,
+            n_bins=n_bins,
+            corr_cap=corr_cap,
+            categorical=True,
         )
 
         # per-group coverage
@@ -316,10 +363,14 @@ def token_presence_stats(
         q4 = max(group_cov.values()) if group_cov else 0.0
 
         out = dict(
-            token=token, docs=int(pres.sum()),
-            cov_all=float(cov_all), cov_bal=float(cov_bal),
-            corr=float(corr), rank=float(rank),
-            q1=q1, q4=q4,
+            token=token,
+            docs=int(pres.sum()),
+            cov_all=float(cov_all),
+            cov_bal=float(cov_bal),
+            corr=float(corr),
+            rank=float(rank),
+            q1=q1,
+            q4=q4,
             group_cov=group_cov,
         )
     else:
@@ -334,15 +385,22 @@ def token_presence_stats(
             y_series = y_series[mask].reset_index(drop=True)
 
         if len(texts_list) != len(y_series):
-            raise ValueError(f"Length mismatch: texts={len(texts_list)} vs y={len(y_series)}")
+            raise ValueError(
+                f"Length mismatch: texts={len(texts_list)} vs y={len(y_series)}"
+            )
 
         pres = np.fromiter(
             (1 if token in _doc_token_set(doc) else 0 for doc in texts_list),
-            dtype=np.int8, count=len(texts_list),
+            dtype=np.int8,
+            count=len(texts_list),
         )
 
         cov_all, cov_bal, corr, rank = _rank_for_token_stats(
-            pres, y_series, n_bins=n_bins, corr_cap=corr_cap, categorical=False,
+            pres,
+            y_series,
+            n_bins=n_bins,
+            corr_cap=corr_cap,
+            categorical=False,
         )
 
         # quartiles (for interpretability)
@@ -353,10 +411,14 @@ def token_presence_stats(
         q4 = float(pres[high].mean()) if len(high) else 0.0
 
         out = dict(
-            token=token, docs=int(pres.sum()),
-            cov_all=float(cov_all), cov_bal=float(cov_bal),
-            corr=float(corr), rank=float(rank),
-            q1=q1, q4=q4,
+            token=token,
+            docs=int(pres.sum()),
+            cov_all=float(cov_all),
+            cov_bal=float(cov_bal),
+            corr=float(corr),
+            rank=float(rank),
+            q1=q1,
+            q4=q4,
         )
 
     if verbose:
@@ -370,7 +432,6 @@ def token_presence_stats(
             print(f"  group_cov: {parts}")
 
     return out
-
 
 
 def coverage_by_lexicon(
@@ -505,12 +566,21 @@ def coverage_by_lexicon(
     # guard: empty after filtering
     if len(texts) == 0 or len(y) == 0:
         summary = dict(
-            docs_any=0, cov_all=0.0, q1=0.0, q4=0.0, corr_any=0.0,
-            hits_mean=0.0, hits_median=0.0, types_mean=0.0, types_median=0.0,
+            docs_any=0,
+            cov_all=0.0,
+            q1=0.0,
+            q4=0.0,
+            corr_any=0.0,
+            hits_mean=0.0,
+            hits_median=0.0,
+            types_mean=0.0,
+            types_median=0.0,
         )
         if is_categorical:
             summary["group_cov"] = {}
-        return summary, pd.DataFrame(columns=["word","docs","cov_all","q1","q4","corr"])
+        return summary, pd.DataFrame(
+            columns=["word", "docs", "cov_all", "q1", "q4", "corr"]
+        )
 
     # --- prep features --------------------------------------------------------
     lex = [str(w) for w in lexicon]
@@ -543,28 +613,35 @@ def coverage_by_lexicon(
         # per-token stats
         rows = []
         for w in lex:
-            pres = np.fromiter(((1 if w in ts else 0) for ts in token_sets),
-                               dtype=np.int8, count=len(token_sets))
+            pres = np.fromiter(
+                ((1 if w in ts else 0) for ts in token_sets),
+                dtype=np.int8,
+                count=len(token_sets),
+            )
             corr = _cramers_v(pres.astype(int), groups)
             gc = {}
             for g in group_labels:
                 idx = np.where(groups == g)[0]
                 gc[g] = float(pres[idx].mean()) if len(idx) else 0.0
-            rows.append(dict(
-                word=w,
-                docs=int(pres.sum()),
-                cov_all=float(pres.mean()) if len(pres) else 0.0,
-                q1=min(gc.values()) if gc else 0.0,
-                q4=max(gc.values()) if gc else 0.0,
-                corr=corr,
-            ))
+            rows.append(
+                dict(
+                    word=w,
+                    docs=int(pres.sum()),
+                    cov_all=float(pres.mean()) if len(pres) else 0.0,
+                    q1=min(gc.values()) if gc else 0.0,
+                    q4=max(gc.values()) if gc else 0.0,
+                    corr=corr,
+                )
+            )
     else:
         bins = _local_quantile_bins(y, n_bins=n_bins)
         low_idx = np.where(bins == bins.min())[0]
         high_idx = np.where(bins == bins.max())[0]
 
         y_std = _local_z(y)
-        corr_any = float(np.corrcoef(pres_any, y_std)[0, 1]) if pres_any.std() > 0 else 0.0
+        corr_any = (
+            float(np.corrcoef(pres_any, y_std)[0, 1]) if pres_any.std() > 0 else 0.0
+        )
 
         q1 = float(pres_any[low_idx].mean()) if len(low_idx) else 0.0
         q4 = float(pres_any[high_idx].mean()) if len(high_idx) else 0.0
@@ -572,24 +649,35 @@ def coverage_by_lexicon(
         # per-token stats
         rows = []
         for w in lex:
-            pres = np.fromiter(((1 if w in ts else 0) for ts in token_sets),
-                               dtype=np.int8, count=len(token_sets))
+            pres = np.fromiter(
+                ((1 if w in ts else 0) for ts in token_sets),
+                dtype=np.int8,
+                count=len(token_sets),
+            )
             corr = float(np.corrcoef(pres, y_std)[0, 1]) if pres.std() > 0 else 0.0
-            rows.append(dict(
-                word=w,
-                docs=int(pres.sum()),
-                cov_all=float(pres.mean()) if len(pres) else 0.0,
-                q1=float(pres[low_idx].mean()) if len(low_idx) else 0.0,
-                q4=float(pres[high_idx].mean()) if len(high_idx) else 0.0,
-                corr=corr,
-            ))
+            rows.append(
+                dict(
+                    word=w,
+                    docs=int(pres.sum()),
+                    cov_all=float(pres.mean()) if len(pres) else 0.0,
+                    q1=float(pres[low_idx].mean()) if len(low_idx) else 0.0,
+                    q4=float(pres[high_idx].mean()) if len(high_idx) else 0.0,
+                    corr=corr,
+                )
+            )
 
-    per_token = pd.DataFrame(rows, columns=["word", "docs", "cov_all", "q1", "q4", "corr"])
+    per_token = pd.DataFrame(
+        rows, columns=["word", "docs", "cov_all", "q1", "q4", "corr"]
+    )
 
     # --- whole-profile lexicon frequency stats (DV-agnostic) ------------------
     lex_set = set(lex)
-    hits_per_unit = np.array([sum(1 for t in toks if t in lex_set) for toks in texts], dtype=np.int32)
-    types_per_unit = np.array([len(set(toks) & lex_set) for toks in texts], dtype=np.int32)
+    hits_per_unit = np.array(
+        [sum(1 for t in toks if t in lex_set) for toks in texts], dtype=np.int32
+    )
+    types_per_unit = np.array(
+        [len(set(toks) & lex_set) for toks in texts], dtype=np.int32
+    )
 
     hits_mean = float(hits_per_unit.mean()) if len(hits_per_unit) else 0.0
     hits_median = float(np.median(hits_per_unit)) if len(hits_per_unit) else 0.0
