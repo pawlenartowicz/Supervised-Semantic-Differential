@@ -131,6 +131,146 @@ class _SSDBase:
         Xp = Xc @ P
         return Xp, mu, P
 
+    # ------------------------------------------------------------------
+    # Shared interpretation methods (used by both SSD and SSDContrast)
+    # ------------------------------------------------------------------
+    def nbrs(self, sign: int = +1, n: int = 16, restrict_vocab: int = 10000):
+        """Return list of (word, cosine, shift) for nearest neighbors to ±β̂ using base model (kv)."""
+        b = self.beta_unit if self.use_unit_beta else self.beta
+        vec = b if sign > 0 else -b
+        out = []
+        for w, sim in filtered_neighbors(self.kv, vec, topn=n, restrict=restrict_vocab):
+            out.append((w, sim, float(self.kv[w].dot(vec))))
+        return out
+
+    def cluster_neighbors(
+        self,
+        *,
+        topn: int = 100,
+        k: int | None = None,
+        k_min: int = 2,
+        k_max: int = 10,
+        restrict_vocab: int = 50000,
+        random_state: int = 13,
+        min_cluster_size: int = 2,
+        top_words: int = 10,
+        verbose: bool = False,
+    ):
+        """
+        Convenience: run clustering for both +β̂ and −β̂ and return concatenated DFs.
+        Also stores self.pos_clusters_raw / self.neg_clusters_raw.
+        """
+        df_pos_clusters, df_pos_members = self.cluster_neighbors_sign(
+            side="pos",
+            topn=topn,
+            k=k,
+            k_min=k_min,
+            k_max=k_max,
+            restrict_vocab=restrict_vocab,
+            random_state=random_state,
+            min_cluster_size=min_cluster_size,
+            top_words=top_words,
+            verbose=verbose,
+        )
+        df_neg_clusters, df_neg_members = self.cluster_neighbors_sign(
+            side="neg",
+            topn=topn,
+            k=k,
+            k_min=k_min,
+            k_max=k_max,
+            restrict_vocab=restrict_vocab,
+            random_state=random_state,
+            min_cluster_size=min_cluster_size,
+            top_words=top_words,
+            verbose=verbose,
+        )
+
+        df_clusters = pd.concat([df_pos_clusters, df_neg_clusters], ignore_index=True)
+        df_members = pd.concat([df_pos_members, df_neg_members], ignore_index=True)
+        return df_clusters, df_members
+
+    def beta_snippets(
+        self,
+        *,
+        pre_docs,
+        window_sentences: int = 1,
+        seeds=None,
+        top_per_side: int = 200,
+        min_cosine: float | None = None,
+    ) -> dict:
+        """
+        Collect text snippets most aligned with the β̂ direction itself (not cluster centroids).
+        Returns dict with:
+            - "beta_pos": DataFrame of most positive snippets
+            - "beta_neg": DataFrame of most negative snippets
+        """
+        from .snippets import snippets_along_beta
+
+        seeds = set(seeds or getattr(self, "lexicon", set()))
+        return snippets_along_beta(
+            pre_docs=pre_docs,
+            ssd=self,
+            token_window=self.window,
+            seeds=seeds,
+            sif_a=self.sif_a,
+            top_per_side=top_per_side,
+            min_cosine=min_cosine,
+        )
+
+    def cluster_snippets(
+        self,
+        *,
+        pre_docs,
+        side: str = "both",  # "pos", "neg", or "both"
+        seeds=None,  # defaults to self.lexicon
+        top_per_cluster: int = 100,
+    ) -> dict:
+        """
+        Collect text snippets (surface sentences) most aligned with each cluster centroid.
+        Requires that clustering has been run via `cluster_neighbors_sign(...)` first.
+
+        Returns:
+            dict with keys:
+                - "pos": DataFrame of positive-side cluster snippets (if requested)
+                - "neg": DataFrame of negative-side cluster snippets (if requested)
+        """
+        # Defensive import (avoid circular)
+        from .snippets import cluster_snippets_by_centroids
+
+        # Ensure clusters exist
+        need_pos = side in ("pos", "both")
+        need_neg = side in ("neg", "both")
+
+        if need_pos and (
+            self.pos_clusters_raw is None or len(self.pos_clusters_raw) == 0
+        ):
+            raise RuntimeError(
+                "Positive-side clusters not available. Run `cluster_neighbors_sign(side='pos')` first."
+            )
+        if need_neg and (
+            self.neg_clusters_raw is None or len(self.neg_clusters_raw) == 0
+        ):
+            raise RuntimeError(
+                "Negative-side clusters not available. Run `cluster_neighbors_sign(side='neg')` first."
+            )
+
+        # Build request
+        pos_clusters = self.pos_clusters_raw if need_pos else []
+        neg_clusters = self.neg_clusters_raw if need_neg else []
+        seeds = set(seeds or getattr(self, "lexicon", set()))
+
+        # Call snippet extractor
+        return cluster_snippets_by_centroids(
+            pre_docs=pre_docs,
+            ssd=self,
+            pos_clusters=pos_clusters,
+            neg_clusters=neg_clusters,
+            token_window=self.window,
+            seeds=seeds,
+            sif_a=self.sif_a,
+            top_per_cluster=top_per_cluster,
+        )
+
 
 class SSD(_SSDBase):
     """
@@ -139,7 +279,7 @@ class SSD(_SSDBase):
     β, stats, neighbors, and human-readable printouts.
 
     Args:
-        kv: Preloaded KeyedVectors or path to embeddings file.
+        kv: Preloaded Embeddings or path to embeddings file.
         docs: List of documents, each as a list of tokens (strings).
         y: Array-like of outcome variable (continuous).
         lexicon: Set or list of seed words (strings) for the concept.
@@ -168,6 +308,11 @@ class SSD(_SSDBase):
         if not mask.all():
             docs = [d for d, m in zip(docs, mask) if m]
             self.y = self.y[mask]
+
+        if len(docs) != len(self.y):
+            raise ValueError(
+                f"len(docs)={len(docs)} != len(y)={len(self.y)} after NaN filtering."
+            )
 
         # 2. Shared PCV pipeline
         self._build_pcvs(
@@ -201,15 +346,6 @@ class SSD(_SSDBase):
         self._calibrate_effect()
 
     # ---------- Public API ----------
-    def nbrs(self, sign: int = +1, n: int = 16, restrict_vocab: int = 10000):
-        """Return list of (word, cosine, shift) for nearest neighbors to ±β̂ using base model (kv)."""
-        b = self.beta_unit if self.use_unit_beta else self.beta
-        vec = b if sign > 0 else -b
-        out = []
-        for w, sim in filtered_neighbors(self.kv, vec, topn=n, restrict=restrict_vocab):
-            out.append((w, sim, float(self.kv[w].dot(vec))))
-        return out
-
     def print_model_stats(self) -> None:
         """Pretty printer for model diagnostics."""
         print(
@@ -469,136 +605,6 @@ class SSD(_SSDBase):
                 print(f"  top: {row.top_words}")
 
         return df_clusters, df_members
-
-    def cluster_neighbors(
-        self,
-        *,
-        topn: int = 100,
-        k: int | None = None,
-        k_min: int = 2,
-        k_max: int = 10,
-        restrict_vocab: int = 50000,
-        random_state: int = 13,
-        min_cluster_size: int = 2,
-        top_words: int = 10,
-        verbose: bool = False,
-    ):
-        """
-        Convenience: run clustering for both +β̂ and −β̂ and return concatenated DFs.
-        Also stores self.pos_clusters_raw / self.neg_clusters_raw.
-        """
-        import pandas as pd
-
-        df_pos_clusters, df_pos_members = self.cluster_neighbors_sign(
-            side="pos",
-            topn=topn,
-            k=k,
-            k_min=k_min,
-            k_max=k_max,
-            restrict_vocab=restrict_vocab,
-            random_state=random_state,
-            min_cluster_size=min_cluster_size,
-            top_words=top_words,
-            verbose=verbose,
-        )
-        df_neg_clusters, df_neg_members = self.cluster_neighbors_sign(
-            side="neg",
-            topn=topn,
-            k=k,
-            k_min=k_min,
-            k_max=k_max,
-            restrict_vocab=restrict_vocab,
-            random_state=random_state,
-            min_cluster_size=min_cluster_size,
-            top_words=top_words,
-            verbose=verbose,
-        )
-
-        df_clusters = pd.concat([df_pos_clusters, df_neg_clusters], ignore_index=True)
-        df_members = pd.concat([df_pos_members, df_neg_members], ignore_index=True)
-        return df_clusters, df_members
-
-    def cluster_snippets(
-        self,
-        *,
-        pre_docs,
-        side: str = "both",  # "pos", "neg", or "both"
-        seeds=None,  # defaults to self.lexicon
-        top_per_cluster: int = 100,
-    ) -> dict:
-        """
-        Collect text snippets (surface sentences) most aligned with each cluster centroid.
-        Requires that clustering has been run via `cluster_neighbors_sign(...)` first.
-
-        Returns:
-            dict with keys:
-                - "pos": DataFrame of positive-side cluster snippets (if requested)
-                - "neg": DataFrame of negative-side cluster snippets (if requested)
-        """
-        # Defensive import (avoid circular)
-        from .snippets import cluster_snippets_by_centroids
-
-        # Ensure clusters exist
-        need_pos = side in ("pos", "both")
-        need_neg = side in ("neg", "both")
-
-        if need_pos and (
-            self.pos_clusters_raw is None or len(self.pos_clusters_raw) == 0
-        ):
-            raise RuntimeError(
-                "Positive-side clusters not available. Run `cluster_neighbors_sign(side='pos')` first."
-            )
-        if need_neg and (
-            self.neg_clusters_raw is None or len(self.neg_clusters_raw) == 0
-        ):
-            raise RuntimeError(
-                "Negative-side clusters not available. Run `cluster_neighbors_sign(side='neg')` first."
-            )
-
-        # Build request
-        pos_clusters = self.pos_clusters_raw if need_pos else []
-        neg_clusters = self.neg_clusters_raw if need_neg else []
-        seeds = set(seeds or getattr(self, "lexicon", set()))
-
-        # Call snippet extractor
-        return cluster_snippets_by_centroids(
-            pre_docs=pre_docs,
-            ssd=self,
-            pos_clusters=pos_clusters,
-            neg_clusters=neg_clusters,
-            token_window=self.window,
-            seeds=seeds,
-            sif_a=self.sif_a,
-            top_per_cluster=top_per_cluster,
-        )
-
-    def beta_snippets(
-        self,
-        *,
-        pre_docs,
-        window_sentences: int = 1,
-        seeds=None,
-        top_per_side: int = 200,
-        min_cosine: float | None = None,
-    ) -> dict:
-        """
-        Collect text snippets most aligned with the β̂ direction itself (not cluster centroids).
-        Returns dict with:
-            - "beta_pos": DataFrame of most positive snippets
-            - "beta_neg": DataFrame of most negative snippets
-        """
-        from .snippets import snippets_along_beta
-
-        seeds = set(seeds or getattr(self, "lexicon", set()))
-        return snippets_along_beta(
-            pre_docs=pre_docs,
-            ssd=self,
-            token_window=self.window,
-            seeds=seeds,
-            sif_a=self.sif_a,
-            top_per_side=top_per_side,
-            min_cosine=min_cosine,
-        )
 
     def ssd_scores(
         self,

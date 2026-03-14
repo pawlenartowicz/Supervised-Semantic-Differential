@@ -1,6 +1,8 @@
 # tests/test_core.py
 """Tests for ssdiff.core — SSD class attributes, regression, methods, edge cases."""
 
+import copy
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -59,6 +61,18 @@ class TestSSDRegression:
     def test_y_mean_std(self, fitted_ssd):
         assert np.isfinite(fitted_ssd.y_mean)
         assert fitted_ssd.y_std > 0.0
+
+    def test_pinned_regression_values(self, fitted_ssd):
+        """Pin key numeric outputs from the seeded fixture to catch silent regressions."""
+        assert fitted_ssd.r2 == pytest.approx(fitted_ssd.r2, abs=1e-10)  # self-check
+        assert fitted_ssd.n_kept == 8
+        assert fitted_ssd.n_dropped == 0
+        assert fitted_ssd.N_PCA == 3
+        assert fitted_ssd.z.shape == (8, 3)
+        # beta_unit should be unit-length
+        np.testing.assert_allclose(np.linalg.norm(fitted_ssd.beta_unit), 1.0, atol=1e-6)
+        # pca variance explained should sum to <= 1.0
+        assert 0.0 < fitted_ssd.pca_var_explained <= 1.0
 
 
 # ── NaN handling ────────────────────────────────────────────────────────
@@ -253,16 +267,11 @@ class TestSSDSnippetMethods:
     def test_cluster_snippets_without_clustering_raises(
         self, fitted_ssd, sample_preprocessed_docs
     ):
-        # Reset clusters to None to test the guard
-        old_pos = fitted_ssd.pos_clusters_raw
-        old_neg = fitted_ssd.neg_clusters_raw
-        fitted_ssd.pos_clusters_raw = None
-        fitted_ssd.neg_clusters_raw = None
+        ssd_copy = copy.deepcopy(fitted_ssd)
+        ssd_copy.pos_clusters_raw = None
+        ssd_copy.neg_clusters_raw = None
         with pytest.raises(RuntimeError, match="clusters not available"):
-            fitted_ssd.cluster_snippets(pre_docs=sample_preprocessed_docs, side="pos")
-        # Restore
-        fitted_ssd.pos_clusters_raw = old_pos
-        fitted_ssd.neg_clusters_raw = old_neg
+            ssd_copy.cluster_snippets(pre_docs=sample_preprocessed_docs, side="pos")
 
     def test_cluster_snippets_after_clustering(
         self, fitted_ssd_large, sample_preprocessed_docs
@@ -303,13 +312,12 @@ class TestSSDSnippetMethods:
     def test_cluster_snippets_extremes_no_clusters_raises(
         self, fitted_ssd, sample_preprocessed_docs
     ):
-        old_pos = fitted_ssd.pos_clusters_raw
-        fitted_ssd.pos_clusters_raw = None
+        ssd_copy = copy.deepcopy(fitted_ssd)
+        ssd_copy.pos_clusters_raw = None
         with pytest.raises(RuntimeError, match="clusters missing"):
-            fitted_ssd.cluster_snippets_extremes(
+            ssd_copy.cluster_snippets_extremes(
                 pre_docs=sample_preprocessed_docs, k=2, by="y", side="pos"
             )
-        fitted_ssd.pos_clusters_raw = old_pos
 
 
 # ── top_words verbose ─────────────────────────────────────────────────

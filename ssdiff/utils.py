@@ -4,7 +4,7 @@ from .embeddings import Embeddings, load_embeddings as _load_embeddings
 from typing import Iterable, List, Tuple, Dict, Union
 import re
 
-_bad_token = re.compile(r".*\d|^[A-ZĄĆĘŁŃÓŚŹŻ]")
+_bad_token = re.compile(r".*\d")
 
 
 def normalize_kv(
@@ -84,7 +84,7 @@ def _doc_vector(doc, kv, lexicon, wc, tot, window, sif_a) -> np.ndarray | None:
             c = doc[j]
             if c not in kv:
                 continue
-            a = sif_a / (sif_a + wc.get(c, 0) / tot)
+            a = sif_a / (sif_a + wc.get(c, 0) / max(tot, 1))
             sum_v += a * kv[c]
             w_sum += a
         if w_sum > 0:
@@ -140,7 +140,7 @@ def _occ_vectors_in_doc(doc, kv, lexicon, wc, tot, window, sif_a):
             c = doc[j]
             if c not in kv:
                 continue
-            a = sif_a / (sif_a + wc.get(c, 0) / tot)
+            a = sif_a / (sif_a + wc.get(c, 0) / max(tot, 1))
             sum_v += a * kv[c]
             w_sum += a
         if w_sum > 0:
@@ -264,7 +264,7 @@ def _full_doc_vector(tokens, kv, wc, tot, sif_a) -> np.ndarray | None:
     for c in tokens:
         if c not in kv:
             continue
-        a = sif_a / (sif_a + wc.get(c, 0) / tot)
+        a = sif_a / (sif_a + wc.get(c, 0) / max(tot, 1))
         sum_v += a * kv[c]
         w_sum += a
 

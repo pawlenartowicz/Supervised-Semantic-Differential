@@ -169,7 +169,7 @@ def _precompute_doc_arrays(
 
     # weights
     w = np.fromiter(
-        (sif_a / (sif_a + global_wc.get(t, 0) / total_tokens) for t in toks),
+        (sif_a / (sif_a + global_wc.get(t, 0) / max(total_tokens, 1)) for t in toks),
         dtype=np.float64,
         count=N,
     )
@@ -569,7 +569,7 @@ def cluster_snippets_by_centroids(
     pre_docs : List[Union[PreprocessedDoc, PreprocessedProfile]]
         Preprocessed documents or profiles to extract snippets from.
     ssd : fitted SSD model
-        Fitted SSD model exposing `kv` (KeyedVectors) and optionally `lexicon`.
+        Fitted SSD model exposing `kv` (Embeddings) and optionally `lexicon`.
     pos_clusters : List[dict] | None
         List of clusters from +β̂ side (each cluster is a dict with 'words' key).
     neg_clusters : List[dict] | None
@@ -740,7 +740,7 @@ def snippets_along_beta(
     pre_docs : List[Union[PreprocessedDoc, PreprocessedProfile]]
         Preprocessed documents or profiles to extract snippets from.
     ssd : fitted SSD model
-        Fitted SSD model exposing `kv` (KeyedVectors) and `beta_unit` (unit vector of β̂).
+        Fitted SSD model exposing `kv` (Embeddings) and `beta_unit` (unit vector of β̂).
     token_window : int, optional
         Token window size around seed occurrences, by default 3.
     seeds : Iterable[str] | None, optional

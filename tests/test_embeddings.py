@@ -7,7 +7,7 @@ from ssdiff.embeddings import (
     Embeddings,
     load_embeddings,
     _GensimKVShim,
-    _load_kv,
+    _load_pickle,
 )
 
 
@@ -253,7 +253,7 @@ class TestLoadKV:
             pickle.dump(shim, f)
         # Save sidecar
         np.save(p + ".vectors.npy", vecs)
-        emb = _load_kv(p)
+        emb = _load_pickle(p)
         assert len(emb) == 2
         np.testing.assert_allclose(emb["x"], vecs[0], atol=1e-6)
 

@@ -17,14 +17,15 @@ from ssdiff.preprocess import (
 
 
 class TestLoadSpacy:
-    def test_empty_model_returns_none(self, capsys):
-        result = load_spacy(None)
-        assert result is None
-        assert "Provide" in capsys.readouterr().out
+    def test_empty_model_raises(self):
+        import pytest
+        with pytest.raises(ValueError, match="Provide"):
+            load_spacy(None)
 
-    def test_empty_string_returns_none(self, capsys):
-        result = load_spacy("")
-        assert result is None
+    def test_empty_string_raises(self):
+        import pytest
+        with pytest.raises(ValueError, match="Provide"):
+            load_spacy("")
 
     @patch("ssdiff.preprocess.spacy")
     def test_successful_load(self, mock_spacy):
@@ -44,11 +45,11 @@ class TestLoadSpacy:
         mock_nlp.add_pipe.assert_called_once_with("sentencizer")
 
     @patch("ssdiff.preprocess.spacy")
-    def test_load_failure(self, mock_spacy, capsys):
+    def test_load_failure(self, mock_spacy):
+        import pytest
         mock_spacy.load.side_effect = OSError("not found")
-        result = load_spacy("nonexistent_model")
-        assert result is None
-        assert "Could not load" in capsys.readouterr().out
+        with pytest.raises(RuntimeError, match="Could not load"):
+            load_spacy("nonexistent_model")
 
 
 # ── load_stopwords (mocked) ────────────────────────────────────────────
@@ -85,10 +86,10 @@ class TestLoadStopwords:
 
 
 class TestPreprocessTexts:
-    def test_returns_empty_without_nlp(self, capsys):
-        result = preprocess_texts(["hello world"], nlp=None)
-        assert result == []
-        assert "Call load_spacy" in capsys.readouterr().out
+    def test_raises_without_nlp(self):
+        import pytest
+        with pytest.raises(ValueError, match="nlp is None"):
+            preprocess_texts(["hello world"], nlp=None)
 
     def test_flat_mode(self, fake_nlp):
         texts = ["Kraj jest piekny", "Narod jest silny"]

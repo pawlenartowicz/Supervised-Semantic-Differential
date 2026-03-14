@@ -76,9 +76,10 @@ class TestFilteredNeighbors:
         vec = tiny_kv["kraj"]
         result = filtered_neighbors(tiny_kv, vec, topn=20, restrict=20)
         words = [w for w, _ in result]
-        # "ABC123" contains digits, "Warszawa" starts with uppercase
+        # "ABC123" contains digits — should be filtered
         assert "ABC123" not in words
-        assert "Warszawa" not in words
+        # "Warszawa" starts with uppercase — should NOT be filtered
+        # (uppercase filter was removed to support non-Polish languages)
 
     def test_topn_respected(self, tiny_kv):
         vec = tiny_kv["piekny"]

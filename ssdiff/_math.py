@@ -22,7 +22,7 @@ def pca_fit_transform(
 
     Parameters
     ----------
-    X : (n, d) array.  Centering is applied internally (matching sklearn).
+    X : (n, d) array.  Centering is applied internally.
     n_components : number of components to keep.
 
     Returns
@@ -55,6 +55,48 @@ def pca_fit_transform(
 # ---------------------------------------------------------------------------
 
 
+def _sq_dists(X: np.ndarray, C: np.ndarray) -> np.ndarray:
+    """Squared Euclidean distances between rows of X (n,d) and C (k,d).
+
+    Uses BLAS matrix-multiply: ||x-c||^2 = ||x||^2 - 2*x.c + ||c||^2
+    Avoids materializing an (n, k, d) intermediate array.
+    """
+    X_sq = np.einsum("ij,ij->i", X, X)  # (n,)
+    C_sq = np.einsum("ij,ij->i", C, C)  # (k,)
+    D = X_sq[:, None] + C_sq[None, :] - 2.0 * (X @ C.T)
+    np.maximum(D, 0.0, out=D)  # clamp rounding noise
+    return D
+
+
+def _kmeans_plus_plus(
+    X: np.ndarray, k: int, rng: np.random.Generator
+) -> np.ndarray:
+    """K-means++ initialization: picks initial centers spread apart.
+
+    O(n*k*d) but avoids large temporaries by updating distances incrementally.
+    """
+    n = X.shape[0]
+    first = rng.integers(n)
+    centers = [first]
+    min_dists = np.full(n, np.inf, dtype=np.float64)
+
+    for _ in range(1, k):
+        last = X[centers[-1]]
+        d = np.sum((X - last) ** 2, axis=1)
+        np.minimum(min_dists, d, out=min_dists)
+
+        total = min_dists.sum()
+        if total == 0:
+            # All remaining points coincide with existing centers
+            idx = rng.integers(n)
+        else:
+            probs = min_dists / total
+            idx = rng.choice(n, p=probs)
+        centers.append(idx)
+
+    return X[centers].copy()
+
+
 def kmeans(
     X: np.ndarray,
     k: int,
@@ -63,7 +105,7 @@ def kmeans(
     max_iter: int = 300,
     n_init: int = 10,
 ) -> Tuple[np.ndarray, np.ndarray, float]:
-    """K-Means clustering via Lloyd's algorithm.
+    """K-Means clustering via Lloyd's algorithm with k-means++ initialization.
 
     Returns (labels, centers, inertia).
     """
@@ -76,29 +118,34 @@ def kmeans(
     best_centers = np.zeros((k, d), dtype=X.dtype)
 
     for _ in range(n_init):
-        idx = rng.choice(n, size=k, replace=False)
-        centers = X[idx].copy()
+        centers = _kmeans_plus_plus(X, k, rng)
 
         for _ in range(max_iter):
-            diffs = X[:, None, :] - centers[None, :, :]
-            dists = (diffs**2).sum(axis=2)
+            dists = _sq_dists(X, centers)
             labels = np.argmin(dists, axis=1)
 
-            new_centers = np.empty_like(centers)
-            for j in range(k):
-                members = X[labels == j]
-                if len(members) == 0:
-                    new_centers[j] = X[rng.integers(n)]
-                else:
-                    new_centers[j] = members.mean(axis=0)
+            # Vectorized center update via bincount
+            new_centers = np.zeros((k, d), dtype=np.float64)
+            counts = np.bincount(labels, minlength=k)
+            for dim in range(d):
+                new_centers[:, dim] = np.bincount(
+                    labels, weights=X[:, dim], minlength=k
+                )
+            nonempty = counts > 0
+            new_centers[nonempty] /= counts[nonempty, None]
 
-            if np.allclose(centers, new_centers):
+            # Reassign empty clusters to random points
+            empty = ~nonempty
+            if empty.any():
+                new_centers[empty] = X[rng.integers(n, size=int(empty.sum()))]
+
+            new_centers = new_centers.astype(X.dtype)
+            if np.allclose(centers, new_centers, rtol=1e-6, atol=1e-6):
                 break
             centers = new_centers
 
-        # Recompute distances against final centers for accurate inertia
-        diffs = X[:, None, :] - centers[None, :, :]
-        dists = (diffs**2).sum(axis=2)
+        # Final assignment with accurate inertia
+        dists = _sq_dists(X, centers)
         labels = np.argmin(dists, axis=1)
         inertia = float(np.min(dists, axis=1).sum())
         if inertia < best_inertia:
@@ -115,36 +162,44 @@ def kmeans(
 
 
 def silhouette_score(X: np.ndarray, labels: np.ndarray) -> float:
-    """Mean silhouette coefficient (Euclidean)."""
+    """Mean silhouette coefficient (Euclidean).
+
+    Vectorized: loops over clusters (k) instead of samples (n).
+    """
     n = len(X)
-    unique = np.unique(labels)
-    if len(unique) < 2:
+    unique_labels = np.unique(labels)
+    if len(unique_labels) < 2:
         return 0.0
 
-    dists = np.linalg.norm(X[:, None] - X[None, :], axis=2)
+    # Pairwise Euclidean distances via BLAS trick
+    X_sq = np.einsum("ij,ij->i", X, X)
+    D_sq = X_sq[:, None] + X_sq[None, :] - 2.0 * (X @ X.T)
+    np.maximum(D_sq, 0.0, out=D_sq)
+    dists = np.sqrt(D_sq)
 
+    a = np.zeros(n, dtype=np.float64)
+    b = np.full(n, np.inf, dtype=np.float64)
+
+    for lab in unique_labels:
+        mask = labels == lab
+        cluster_size = int(mask.sum())
+
+        # Intra-cluster: mean distance to same-cluster members (excluding self)
+        if cluster_size > 1:
+            a[mask] = dists[np.ix_(mask, mask)].sum(axis=1) / (cluster_size - 1)
+
+        # Inter-cluster: mean distance from non-members to this cluster
+        not_mask = ~mask
+        if not_mask.any() and cluster_size > 0:
+            mean_to_cluster = dists[np.ix_(not_mask, mask)].mean(axis=1)
+            b[not_mask] = np.minimum(b[not_mask], mean_to_cluster)
+
+    # Points whose b stayed inf (sole member, only 1 other cluster) → silhouette 0
+    finite = np.isfinite(b)
+    denom = np.maximum(a, b)
     sil = np.zeros(n, dtype=np.float64)
-    for i in range(n):
-        mask_same = labels == labels[i]
-        mask_same[i] = False
-        n_same = mask_same.sum()
-
-        if n_same == 0:
-            sil[i] = 0.0
-            continue
-
-        a_i = dists[i, mask_same].sum() / n_same
-
-        b_i = np.inf
-        for lab in unique:
-            if lab == labels[i]:
-                continue
-            mask_other = labels == lab
-            b_i = min(b_i, dists[i, mask_other].mean())
-
-        denom = max(a_i, b_i)
-        sil[i] = (b_i - a_i) / denom if denom > 0 else 0.0
-
+    valid = finite & (denom > 0)
+    sil[valid] = (b[valid] - a[valid]) / denom[valid]
     return float(sil.mean())
 
 

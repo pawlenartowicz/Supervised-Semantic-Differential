@@ -135,6 +135,35 @@ class SSDGroup(_SSDBase):
             centroids[g] = c / max(norm, 1e-12)
         return centroids
 
+    def _compute_centroids_matrix(
+        self, X: np.ndarray, group_idx: np.ndarray, G: int
+    ) -> np.ndarray:
+        """Vectorized centroid computation using bincount.
+
+        Parameters
+        ----------
+        X : (N, D) doc vectors
+        group_idx : (N,) integer indices in [0, G)
+        G : number of groups
+
+        Returns
+        -------
+        centroids : (G, D) unit-normalized centroid matrix
+        """
+        D = X.shape[1]
+        counts = np.bincount(group_idx, minlength=G)
+        centroids = np.zeros((G, D), dtype=np.float64)
+        for dim in range(D):
+            centroids[:, dim] = np.bincount(
+                group_idx, weights=X[:, dim], minlength=G
+            )
+        mask = counts > 0
+        centroids[mask] /= counts[mask, np.newaxis]
+        norms = np.linalg.norm(centroids, axis=1, keepdims=True)
+        norms = np.maximum(norms, 1e-12)
+        centroids /= norms
+        return centroids
+
     # ----------------------------------------------------------------
     # Test statistics
     # ----------------------------------------------------------------
@@ -151,6 +180,24 @@ class SSDGroup(_SSDBase):
             return 0.0
         total = sum(self._cosine_distance(centroids[a], centroids[b]) for a, b in pairs)
         return total / len(pairs)
+
+    def _omnibus_T_from_matrix(
+        self, centroid_matrix: np.ndarray, pair_indices: np.ndarray
+    ) -> float:
+        """Compute mean pairwise cosine distance from a (G, D) centroid matrix.
+
+        Parameters
+        ----------
+        centroid_matrix : (G, D) unit-normalized centroids
+        pair_indices : (P, 2) integer pairs indexing into centroid_matrix
+        """
+        if len(pair_indices) == 0:
+            return 0.0
+        dots = np.sum(
+            centroid_matrix[pair_indices[:, 0]] * centroid_matrix[pair_indices[:, 1]],
+            axis=1,
+        )
+        return float(np.mean(1.0 - dots))
 
     def _compute_pairwise_T(self, X: np.ndarray, groups: np.ndarray, g1, g2) -> float:
         """Cosine distance between two specific group centroids."""
@@ -169,16 +216,24 @@ class SSDGroup(_SSDBase):
     def _omnibus_permutation_test(self):
         """
         Permutation test on T = mean pairwise cosine distance.
-        Permute group labels, recompute centroids and T.
+        Permute group labels, recompute centroids and T via bincount.
         One-sided p = proportion of null >= observed.
         """
         T_obs = self._compute_omnibus_T(self.x, self.groups_kept)
-        null_dist = np.empty(self.n_perm, dtype=np.float64)
 
-        groups_perm = self.groups_kept.copy()
+        # Pre-compute integer group indices and pair index array
+        label_to_idx = {g: i for i, g in enumerate(self.group_labels)}
+        group_idx = np.array([label_to_idx[g] for g in self.groups_kept], dtype=np.intp)
+        G = len(self.group_labels)
+        pair_indices = np.array(
+            list(combinations(range(G), 2)), dtype=np.intp
+        )
+
+        null_dist = np.empty(self.n_perm, dtype=np.float64)
         for i in range(self.n_perm):
-            self._rng.shuffle(groups_perm)
-            null_dist[i] = self._compute_omnibus_T(self.x, groups_perm)
+            self._rng.shuffle(group_idx)
+            centroids = self._compute_centroids_matrix(self.x, group_idx, G)
+            null_dist[i] = self._omnibus_T_from_matrix(centroids, pair_indices)
 
         p_value = float(np.mean(null_dist >= T_obs))
         return T_obs, p_value, null_dist
@@ -203,14 +258,19 @@ class SSDGroup(_SSDBase):
 
             T_obs = self._compute_pairwise_T(self.x, self.groups_kept, g1, g2)
 
-            # Permutation within pair
+            # Pre-compute integer split for index-based permutation
+            is_g1 = (g_pair == g1)
+            n_g1 = int(is_g1.sum())
+            n_pair = len(g_pair)
+
             null_dist = np.empty(self.n_perm, dtype=np.float64)
-            g_perm = g_pair.copy()
             for i in range(self.n_perm):
-                self._rng.shuffle(g_perm)
-                c1 = X_pair[g_perm == g1].mean(axis=0)
+                perm_idx = self._rng.permutation(n_pair)
+                perm_g1 = perm_idx[:n_g1]
+                perm_g2 = perm_idx[n_g1:]
+                c1 = X_pair[perm_g1].mean(axis=0)
                 c1 /= max(float(np.linalg.norm(c1)), 1e-12)
-                c2 = X_pair[g_perm == g2].mean(axis=0)
+                c2 = X_pair[perm_g2].mean(axis=0)
                 c2 /= max(float(np.linalg.norm(c2)), 1e-12)
                 null_dist[i] = 1.0 - float(np.dot(c1, c2))
 
@@ -381,17 +441,20 @@ class SSDGroup(_SSDBase):
         return result
 
 
-class SSDContrast:
+class SSDContrast(_SSDBase):
     """
     A pairwise centroid contrast that duck-types with a fitted SSD
     for downstream interpretation (neighbors, clustering, snippets).
 
+    Inherits shared interpretation methods from _SSDBase:
+        .nbrs(), .cluster_neighbors(), .beta_snippets(), .cluster_snippets()
+
+    Overrides (group-aware output columns):
+        .top_words(), .cluster_neighbors_sign()
+
     Exposes the same attributes that clusters.py and snippets.py read:
         .kv, .beta, .beta_unit, .use_unit_beta, .lexicon,
         .window, .sif_a, .x (doc vectors)
-
-    Plus convenience methods that mirror SSD:
-        .nbrs(), .top_words(), .cluster_neighbors(), etc.
     """
 
     def __init__(
@@ -436,19 +499,7 @@ class SSDContrast:
         self.pos_clusters_raw = None
         self.neg_clusters_raw = None
 
-    # --- Neighbors (mirrors SSD.nbrs) ---
-    def nbrs(self, sign: int = +1, n: int = 16, restrict_vocab: int = 10000):
-        """Nearest neighbors to +/-contrast direction.
-        sign=+1 → more group_a-like, sign=-1 → more group_b-like.
-        """
-        b = self.beta_unit if self.use_unit_beta else self.beta
-        vec = b if sign > 0 else -b
-        out = []
-        for w, sim in filtered_neighbors(self.kv, vec, topn=n, restrict=restrict_vocab):
-            out.append((w, sim, float(self.kv[w].dot(vec))))
-        return out
-
-    # --- Top words table (mirrors SSD.top_words) ---
+    # --- Top words table (group-aware, overrides _SSDBase) ---
     def top_words(self, n: int = 10, *, verbose: bool = False) -> pd.DataFrame:
         """DataFrame of top-N neighbors on both poles of the contrast."""
         b = self.beta_unit if self.use_unit_beta else self.beta
@@ -563,93 +614,3 @@ class SSDContrast:
                 print(f"    top: {row.top_words}")
 
         return df_clusters, df_members
-
-    def cluster_neighbors(
-        self,
-        *,
-        topn=100,
-        k=None,
-        k_min=2,
-        k_max=10,
-        restrict_vocab=50000,
-        random_state=13,
-        min_cluster_size=2,
-        top_words=10,
-        verbose=False,
-    ):
-        """Run clustering for both sides, return concatenated DFs."""
-        df_pos_c, df_pos_m = self.cluster_neighbors_sign(
-            side="pos",
-            topn=topn,
-            k=k,
-            k_min=k_min,
-            k_max=k_max,
-            restrict_vocab=restrict_vocab,
-            random_state=random_state,
-            min_cluster_size=min_cluster_size,
-            top_words=top_words,
-            verbose=verbose,
-        )
-        df_neg_c, df_neg_m = self.cluster_neighbors_sign(
-            side="neg",
-            topn=topn,
-            k=k,
-            k_min=k_min,
-            k_max=k_max,
-            restrict_vocab=restrict_vocab,
-            random_state=random_state,
-            min_cluster_size=min_cluster_size,
-            top_words=top_words,
-            verbose=verbose,
-        )
-        return (
-            pd.concat([df_pos_c, df_neg_c], ignore_index=True),
-            pd.concat([df_pos_m, df_neg_m], ignore_index=True),
-        )
-
-    # --- Snippets (mirrors SSD.beta_snippets) ---
-    def beta_snippets(self, *, pre_docs, seeds=None, top_per_side=200, min_cosine=None):
-        """Snippets along the contrast direction."""
-        from .snippets import snippets_along_beta
-
-        seeds = set(seeds or self.lexicon)
-        return snippets_along_beta(
-            pre_docs=pre_docs,
-            ssd=self,
-            token_window=self.window,
-            seeds=seeds,
-            sif_a=self.sif_a,
-            top_per_side=top_per_side,
-            min_cosine=min_cosine,
-        )
-
-    def cluster_snippets(
-        self, *, pre_docs, side="both", seeds=None, top_per_cluster=100
-    ):
-        """Snippets per cluster centroid."""
-        from .snippets import cluster_snippets_by_centroids
-
-        need_pos = side in ("pos", "both")
-        need_neg = side in ("neg", "both")
-        pos_c = self.pos_clusters_raw if need_pos else []
-        neg_c = self.neg_clusters_raw if need_neg else []
-        if need_pos and not pos_c:
-            raise RuntimeError("Run cluster_neighbors_sign(side='pos') first.")
-        if need_neg and not neg_c:
-            raise RuntimeError("Run cluster_neighbors_sign(side='neg') first.")
-        seeds = set(seeds or self.lexicon)
-        return cluster_snippets_by_centroids(
-            pre_docs=pre_docs,
-            ssd=self,
-            pos_clusters=pos_c,
-            neg_clusters=neg_c,
-            token_window=self.window,
-            seeds=seeds,
-            sif_a=self.sif_a,
-            top_per_cluster=top_per_cluster,
-        )
-
-    @staticmethod
-    def _unit(v, eps=1e-12):
-        n = float(np.linalg.norm(v))
-        return v / max(n, eps)

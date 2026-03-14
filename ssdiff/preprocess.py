@@ -33,8 +33,15 @@ def load_stopwords(
 
     if lang == "pl":
         url = "https://raw.githubusercontent.com/bieli/stopwords/master/polish.stopwords.txt"
-        r = requests.get(url, timeout=timeout)
-        r.raise_for_status()
+        try:
+            r = requests.get(url, timeout=timeout)
+            r.raise_for_status()
+        except (requests.RequestException, OSError) as exc:
+            raise RuntimeError(
+                f"Failed to fetch Polish stopwords from {url}: {exc}. "
+                "Provide stopwords manually via the `stopwords` parameter, "
+                "or check your internet connection."
+            ) from exc
         words = [s.strip() for s in r.text.splitlines() if s.strip()]
         if not words:
             raise ValueError("Fetched Polish stopword list is empty.")
@@ -60,10 +67,9 @@ def load_spacy(
     Backwards compatible with older usage: load_spacy("pl_core_news_sm").
     """
     if not model or not isinstance(model, str) or not model.strip():
-        print(
-            "✖ Provide a spaCy model name (e.g., 'pl_core_news_sm' or 'en_core_web_sm')."
+        raise ValueError(
+            "Provide a spaCy model name (e.g., 'pl_core_news_sm' or 'en_core_web_sm')."
         )
-        return None
 
     try:
         nlp = spacy.load(model, disable=list(disable))
@@ -72,8 +78,9 @@ def load_spacy(
             nlp.add_pipe("sentencizer")
         return nlp
     except Exception as e:
-        print(f"… Could not load '{model}' ({e}). See https://spacy.io/models")
-        return None
+        raise RuntimeError(
+            f"Could not load spaCy model '{model}': {e}. See https://spacy.io/models"
+        ) from e
 
 
 # ---------- token filter ----------
@@ -202,8 +209,7 @@ def preprocess_texts(
         - Set to -1  → use all cores (like your FAST version).
     """
     if nlp is None:
-        print("✖ Call load_spacy(model) and pass the nlp.")
-        return []
+        raise ValueError("nlp is None. Call load_spacy(model) first and pass the result.")
 
     stopset = set(stopwords or [])
     out: List[Union[PreprocessedDoc, PreprocessedProfile]] = []

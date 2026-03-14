@@ -92,7 +92,7 @@ class Embeddings:
     # ---- persistence ----
 
     def save(self, path: str) -> None:
-        """Save to pickle + ``.vectors.npy`` sidecar (round-trips with ``_load_kv``)."""
+        """Save to pickle + ``.vectors.npy`` sidecar (round-trips with ``_load_pickle``)."""
         npy_path = path + ".vectors.npy"
         np.save(npy_path, self.vectors)
         saved_vectors = self.vectors
@@ -217,6 +217,13 @@ class _GensimUnpickler(pickle.Unpickler):
     def find_class(self, module: str, name: str) -> type:
         if "KeyedVectors" in name or "Word2VecKeyedVectors" in name:
             return _GensimKVShim
+        if module.startswith("gensim"):
+            # Gensim pickles reference helper classes (e.g. gensim.utils.SaveLoad).
+            # When gensim is not installed we need a harmless stand-in.
+            try:
+                return super().find_class(module, name)
+            except (ModuleNotFoundError, ImportError):
+                return _GensimKVShim
         return super().find_class(module, name)
 
 
@@ -242,12 +249,15 @@ class _GensimKVShim:
         return Embeddings(keys, vecs)
 
 
-def _load_kv(path: str) -> Embeddings:
-    """Load gensim .kv pickle format (with sidecar .npy files)."""
-    vectors_npy = path + ".vectors.npy"
+def _load_pickle(path: str) -> Embeddings:
+    """Load pickle-based embeddings: .sddemb (ssdiff) or .kv (gensim) format."""
+    # Sidecar is always next to the uncompressed file, not the .gz wrapper
+    base = path[: -len(".gz")] if path.lower().endswith(".gz") else path
+    vectors_npy = base + ".vectors.npy"
     has_sidecar = os.path.exists(vectors_npy)
 
-    with open(path, "rb") as f:
+    opener = gzip.open if path.lower().endswith(".gz") else open
+    with opener(path, "rb") as f:
         shim = _GensimUnpickler(f).load()
 
     if isinstance(shim, _GensimKVShim):
@@ -267,7 +277,7 @@ def _load_kv(path: str) -> Embeddings:
             shim._normed_vectors = None
         return shim
 
-    raise ValueError(f"Cannot load .kv file: unexpected object type {type(shim)}")
+    raise ValueError(f"Cannot load pickle embeddings: unexpected object type {type(shim)}")
 
 
 def load_embeddings(path: str) -> Embeddings:
@@ -275,7 +285,8 @@ def load_embeddings(path: str) -> Embeddings:
     Load pre-trained word embeddings from file.
 
     Supports:
-      - .kv         (gensim KeyedVectors pickle + optional .npy sidecar)
+      - .sddemb     (ssdiff native pickle + .npy sidecar — fastest)
+      - .kv         (gensim KeyedVectors pickle — legacy, also supported)
       - .bin        (word2vec binary)
       - .txt, .vec  (word2vec/GloVe text, auto-detects header)
       - .gz         (gzip-compressed variants of the above)
@@ -283,8 +294,11 @@ def load_embeddings(path: str) -> Embeddings:
     low = path.lower()
     ext = os.path.splitext(low)[1]
 
+    if ext == ".sddemb" or low.endswith(".sddemb.gz"):
+        return _load_pickle(path)
+
     if ext == ".kv" or low.endswith(".kv.gz"):
-        return _load_kv(path)
+        return _load_pickle(path)
 
     if ext == ".bin" or low.endswith(".bin.gz"):
         return _load_text(path, binary=True)
@@ -295,8 +309,8 @@ def load_embeddings(path: str) -> Embeddings:
     if ext == ".gz":
         raise ValueError(
             f"Cannot determine embedding format for '{path}'. "
-            "Rename to .txt.gz, .vec.gz, .bin.gz, or .kv.gz."
+            "Rename to .txt.gz, .vec.gz, .bin.gz, or .sddemb.gz."
         )
 
-    # Fallback: try as gensim/ssdiff pickle
-    return _load_kv(path)
+    # Fallback: try as pickle
+    return _load_pickle(path)

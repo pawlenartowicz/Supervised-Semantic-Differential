@@ -8,11 +8,6 @@ from typing import Optional, Sequence
 import numpy as np
 import pandas as pd
 
-import matplotlib
-
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-
 from .core import SSD  # adjust if needed
 
 
@@ -217,7 +212,7 @@ def pca_sweep(
 
     Parameters
     ----------
-    kv : KeyedVectors
+    kv : Embeddings
         Word embeddings.
     docs : List[List[str]] | List[List[List[str]]]
         Documents as lists of tokens or lists of lists of tokens.
@@ -409,6 +404,10 @@ def pca_sweep(
             print(f"Saved table → {out_xlsx}")
 
     if save_figures and out_dir is not None:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
         x = df["PCA_K"].to_numpy(dtype=int)
         y_left = df["interp_resid_z"].to_numpy(dtype=float)
 
