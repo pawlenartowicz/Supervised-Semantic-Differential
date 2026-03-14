@@ -1,4 +1,5 @@
 # ssdiff/utils.py
+from __future__ import annotations
 import numpy as np
 from .embeddings import Embeddings, load_embeddings as _load_embeddings
 from typing import Iterable, List, Tuple, Dict, Union
