@@ -50,6 +50,8 @@ pip install ssdiff
 
 Dependencies (installed automatically): `numpy`, `pandas`, `scikit-learn`, `gensim`, `spacy`.
 
+> **Windows + Python 3.9:** Installation will fail because `spacy`'s transitive dependency `blis` has no pre-built wheel for this combination and cannot compile from source on Windows. Use **Python 3.10+** on Windows. Linux and macOS work fine with Python 3.9.
+
 
 ---
 

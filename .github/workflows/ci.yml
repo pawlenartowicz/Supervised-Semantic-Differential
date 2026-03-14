@@ -14,6 +14,11 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
         python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+        exclude:
+          # blis has no pre-built wheel for Windows + Python 3.9;
+          # source build fails due to unsupported compiler flags.
+          - os: windows-latest
+            python-version: "3.9"
 
     steps:
       - uses: actions/checkout@v4
